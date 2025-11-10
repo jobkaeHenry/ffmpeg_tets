@@ -39,7 +39,9 @@ export function ConversionControls({
       }}
     >
       {!ready ? (
-        <p style={{ textAlign: "center", color: "#999" }}>⚙️ FFmpeg WASM 로딩 중...</p>
+        <p style={{ textAlign: "center", color: "#999" }}>
+          ⚙️ 바나나브레드 엔진을 로딩 중입니다...
+        </p>
       ) : (
         <>
           {!isSample && (
@@ -74,7 +76,9 @@ export function ConversionControls({
                   color: "#333",
                 }}
               />
-              <small style={{ color: "#777" }}>또는 샘플 이미지를 사용할 수 있습니다.</small>
+              <small style={{ color: "#777" }}>
+                또는 샘플 이미지를 사용할 수 있습니다.
+              </small>
             </div>
           )}
 

@@ -114,7 +114,7 @@ export default function App() {
           textAlign: "center",
         }}
       >
-        🎬 GIF → WebP 변환기
+        바나나브레드 GIF → WebP 변환기
       </h1>
 
       <ConversionControls
@@ -146,7 +146,11 @@ export default function App() {
 
       {/* 진행률 */}
       {progress > 0 && progress < 100 && (
-        <ProgressBar progress={progress} theme={THEME} message={loadingMessage} />
+        <ProgressBar
+          progress={progress}
+          theme={THEME}
+          message={loadingMessage}
+        />
       )}
 
       {/* 결과 섹션 */}
