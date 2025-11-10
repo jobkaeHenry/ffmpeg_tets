@@ -96,7 +96,7 @@ export default function App() {
     ]);
 
     const data = (await ffmpeg.readFile(outputName)) as Uint8Array;
-    const blob = new Blob([data], { type: "image/webp" });
+    const blob = new Blob([data.slice().buffer], { type: "image/webp" });
     const url = URL.createObjectURL(blob);
     setOutputUrl(url);
     setProgress(100);
