@@ -9,11 +9,11 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [inputFile, setInputFile] = useState<File | null>(null);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
-  const [outputFileName, setOutputFileName] =
-    useState<string>("converted.webp");
+  const [outputFileName, setOutputFileName] = useState("converted.webp");
   const [isSample, setIsSample] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [quality, setQuality] = useState(85);
+  const [quality, setQuality] = useState(85); // 🔹 q:v
+  const [compression, setCompression] = useState(4); // 🔹 compression_level
   const [originalSize, setOriginalSize] = useState<number | null>(null);
   const [convertedSize, setConvertedSize] = useState<number | null>(null);
   const [loadingMessage, setLoadingMessage] = useState("");
@@ -80,9 +80,9 @@ export default function App() {
       "-c:v",
       "libwebp",
       "-q:v",
-      String(quality ?? 80),
+      String(quality),
       "-compression_level",
-      "4",
+      String(compression),
       "-preset",
       "drawing",
       "-pix_fmt",
@@ -123,6 +123,95 @@ export default function App() {
     alert("✅ 포트폴리오에 추가되었습니다!");
   };
 
+  // 🔹 화살표 있는 숫자 입력 (compression 전용)
+  const CompressionControl = ({
+    label,
+    value,
+    setValue,
+    min,
+    max,
+    step = 1,
+  }: {
+    label: string;
+    value: number;
+    setValue: (v: number | ((prev: number) => number)) => void;
+    min: number;
+    max: number;
+    step?: number;
+  }) => (
+    <div style={{ marginBottom: 20 }}>
+      <label
+        style={{
+          fontSize: 14,
+          color: "#555",
+          display: "block",
+          marginBottom: 6,
+        }}
+      >
+        {label}: {value}
+      </label>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          border: `1px solid ${THEME}33`,
+          borderRadius: 8,
+          overflow: "hidden",
+        }}
+      >
+        <button
+          onClick={() => setValue((prev) => (prev > min ? prev - step : prev))}
+          style={{
+            flex: "0 0 40px",
+            height: 38,
+            border: "none",
+            background: "transparent",
+            fontSize: 20,
+            color: THEME,
+            cursor: "pointer",
+          }}
+        >
+          −
+        </button>
+        <input
+          type="number"
+          min={min}
+          max={max}
+          value={value}
+          onChange={(e) => {
+            const newValue = Number(e.target.value);
+            if (newValue >= min && newValue <= max) setValue(newValue);
+          }}
+          style={{
+            flex: 1,
+            textAlign: "center",
+            border: "none",
+            outline: "none",
+            height: 38,
+            fontSize: 15,
+          }}
+        />
+        <button
+          onClick={() => setValue((prev) => (prev < max ? prev + step : prev))}
+          style={{
+            flex: "0 0 40px",
+            height: 38,
+            border: "none",
+            background: "transparent",
+            fontSize: 20,
+            color: THEME,
+            cursor: "pointer",
+          }}
+        >
+          +
+        </button>
+      </div>
+      <small style={{ color: "#777" }}>
+        0 = 빠름 / 6 = 최대 압축 (용량 ↓, 속도 ↓)
+      </small>
+    </div>
+  );
+
   return (
     <div
       style={{
@@ -149,7 +238,6 @@ export default function App() {
         🎬 GIF → WebP 변환기
       </h1>
 
-      {/* 업로드 섹션 */}
       <div
         style={{
           background: "#fff",
@@ -207,7 +295,7 @@ export default function App() {
               </div>
             )}
 
-            {/* 품질 슬라이더 */}
+            {/* 🔹 품질 슬라이더 */}
             <div style={{ marginBottom: 20 }}>
               <label
                 style={{
@@ -217,7 +305,7 @@ export default function App() {
                   marginBottom: 6,
                 }}
               >
-                압축 강도 (품질): {quality}
+                품질 : {quality}
               </label>
               <input
                 type="range"
@@ -233,11 +321,19 @@ export default function App() {
               />
             </div>
 
+            {/* 🔹 압축 컨트롤 */}
+            <CompressionControl
+              label="압축 강도"
+              value={compression}
+              setValue={setCompression}
+              min={0}
+              max={6}
+            />
+
             {/* 버튼 */}
             <div
               style={{
                 display: "flex",
-                flexDirection: "row",
                 gap: 8,
                 marginBottom: 16,
               }}
@@ -343,38 +439,21 @@ export default function App() {
           >
             🖼 변환 결과 비교
           </h3>
-
-          {/* 반응형 비교 영역 */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 24,
-            }}
-          >
-            {/* 원본 */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
             <div>
               <h4 style={{ fontSize: 15, fontWeight: 500 }}>원본</h4>
               {isSample ? (
                 <img
                   src="/sample.gif"
                   alt="original"
-                  style={{
-                    width: "100%",
-                    borderRadius: 12,
-                    marginBottom: 8,
-                  }}
+                  style={{ width: "100%", borderRadius: 12, marginBottom: 8 }}
                 />
               ) : (
                 inputFile && (
                   <img
                     src={URL.createObjectURL(inputFile)}
                     alt="original"
-                    style={{
-                      width: "100%",
-                      borderRadius: 12,
-                      marginBottom: 8,
-                    }}
+                    style={{ width: "100%", borderRadius: 12, marginBottom: 8 }}
                   />
                 )
               )}
@@ -385,17 +464,12 @@ export default function App() {
               )}
             </div>
 
-            {/* 변환본 */}
             <div>
               <h4 style={{ fontSize: 15, fontWeight: 500 }}>변환본 (WebP)</h4>
               <img
                 src={outputUrl}
                 alt="converted"
-                style={{
-                  width: "100%",
-                  borderRadius: 12,
-                  marginBottom: 8,
-                }}
+                style={{ width: "100%", borderRadius: 12, marginBottom: 8 }}
               />
               {convertedSize && (
                 <p style={{ fontSize: 13, color: "#777" }}>
@@ -405,7 +479,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* 버튼 */}
           <div
             style={{
               display: "flex",
