@@ -13,7 +13,7 @@ export default function App() {
     useState<string>("converted.webp");
   const [isSample, setIsSample] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [quality, setQuality] = useState(80);
+  const [quality, setQuality] = useState(85);
   const [originalSize, setOriginalSize] = useState<number | null>(null);
   const [convertedSize, setConvertedSize] = useState<number | null>(null);
   const [loadingMessage, setLoadingMessage] = useState("");
@@ -75,8 +75,8 @@ export default function App() {
     await ffmpeg.exec([
       "-i",
       inputName,
-      "-vf",
-      "fps=20,scale=iw:-1:flags=lanczos,format=rgba,colorlevels=rimin=0:gimin=0:bimin=0:rimax=1:gimax=1:bimax=1",
+      "-filter:v",
+      "scale=iw:-1:flags=neighbor,format=rgba",
       "-c:v",
       "libwebp",
       "-q:v",
@@ -84,7 +84,7 @@ export default function App() {
       "-compression_level",
       "4",
       "-preset",
-      "photo",
+      "drawing",
       "-pix_fmt",
       "rgba",
       "-loop",
