@@ -1,216 +1,95 @@
-import { useEffect, useState } from "react";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
+import { useEffect, useMemo, useState } from "react";
+import { useFFmpeg } from "./shared/lib/useFFmpeg";
+import { convertToWebp as convertToWebpLib } from "./features/convert/lib/convertToWebp";
+import { ConversionControls } from "./widgets/conversion/ConversionControls";
+import { ResultPanel } from "./widgets/result/ResultPanel";
+import { THEME } from "./shared/config/theme";
+import { ProgressBar } from "./shared/ui/ProgressBar";
+import { SAMPLE_GIF } from "./shared/constants/sample";
 
 export default function App() {
-  const THEME = "#05bcc6"; // 💎 메인 테마 컬러
-
-  const [ffmpeg, setFfmpeg] = useState<FFmpeg | null>(null);
-  const [ready, setReady] = useState(false);
+  const {
+    ffmpeg,
+    ready,
+    progress,
+    loadingMessage,
+    setProgress,
+    setLoadingMessage,
+    resetProgress,
+  } = useFFmpeg();
   const [inputFile, setInputFile] = useState<File | null>(null);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
   const [outputFileName, setOutputFileName] = useState("converted.webp");
   const [isSample, setIsSample] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [quality, setQuality] = useState(85); // 🔹 q:v
   const [compression, setCompression] = useState(4); // 🔹 compression_level
   const [originalSize, setOriginalSize] = useState<number | null>(null);
   const [convertedSize, setConvertedSize] = useState<number | null>(null);
-  const [loadingMessage, setLoadingMessage] = useState("");
-
-  const loadingMessages = [
-    "🔍 GIF 파일을 메모리로 로드하고 있어요...",
-    "📊 프레임 정보를 분석하는 중이에요...",
-    "🎞 프레임을 추출하고 순서를 정리하고 있어요...",
-    "🎨 색상 팔레트를 최적화하는 중이에요...",
-    "⚙️ 프레임을 WebP 포맷으로 인코딩하고 있어요...",
-    "💾 변환된 데이터를 저장하는 중이에요...",
-    "🧠 압축 품질과 파일 크기를 계산하고 있어요...",
-  ];
-
-  // ✅ FFmpeg 초기화
-  useEffect(() => {
-    (async () => {
-      const ff = new FFmpeg();
-      ff.on("progress", ({ progress }) => {
-        const percent = Math.round(progress * 100);
-        setProgress(percent);
-        const step = Math.floor(percent / (100 / loadingMessages.length));
-        if (step >= 0 && step < loadingMessages.length) {
-          setLoadingMessage(loadingMessages[step]);
-        }
-      });
-      await ff.load();
-      setFfmpeg(ff);
-      setReady(true);
-      console.log("✅ FFmpeg ready");
-    })().catch(console.error);
-  }, []);
-
-  // ✅ 변환 함수
-  const convertToWebp = async (input: File | string) => {
-    if (!ffmpeg) return;
+  const onToggleSample = () => {
     setOutputUrl(null);
-    setProgress(0);
-    setConvertedSize(null);
-
-    let baseName = "converted";
-    if (typeof input !== "string" && input instanceof File) {
-      baseName = input.name.replace(/\.[^/.]+$/, "");
-    } else if (typeof input === "string" && input.includes("/")) {
-      baseName =
-        input
-          .split("/")
-          .pop()
-          ?.replace(/\.[^/.]+$/, "") || "sample";
-    }
-
-    const inputName = "input.gif";
-    const outputName = `${baseName}.webp`;
-    setOutputFileName(outputName);
-
-    await ffmpeg.writeFile(inputName, await fetchFile(input));
-    console.log(`🎞 ${baseName}.gif → ${outputName} 변환 중...`);
-
-    await ffmpeg.exec([
-      "-i",
-      inputName,
-      "-filter:v",
-      "scale=iw:-1:flags=neighbor,format=rgba",
-      "-c:v",
-      "libwebp",
-      "-q:v",
-      String(quality),
-      "-compression_level",
-      String(compression),
-      "-preset",
-      "drawing",
-      "-pix_fmt",
-      "rgba",
-      "-loop",
-      "0",
-      "-an",
-      "-vsync",
-      "0",
-      outputName,
-    ]);
-
-    const data = (await ffmpeg.readFile(outputName)) as Uint8Array;
-    const blob = new Blob([data.slice().buffer], { type: "image/webp" });
-    const url = URL.createObjectURL(blob);
-    setOutputUrl(url);
-    setProgress(100);
-    setLoadingMessage("");
-
-    setConvertedSize(blob.size / 1024);
   };
+
+  const originalUrl = useMemo(() => {
+    if (isSample) return null;
+    if (!inputFile) return null;
+    return URL.createObjectURL(inputFile);
+  }, [inputFile, isSample]);
+
+  useEffect(() => {
+    return () => {
+      if (originalUrl) URL.revokeObjectURL(originalUrl);
+    };
+  }, [originalUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (outputUrl) URL.revokeObjectURL(outputUrl);
+    };
+  }, [outputUrl]);
 
   const handleConvert = async () => {
     if (!ffmpeg) return;
     setOutputUrl(null);
+    setConvertedSize(null);
+    resetProgress();
     if (isSample) {
-      const res = await fetch("/sample.gif");
+      const res = await fetch(SAMPLE_GIF);
       const blob = await res.blob();
       setOriginalSize(blob.size / 1024);
-      await convertToWebp("/sample.gif");
+      const result = await convertToWebpLib({
+        ffmpeg,
+        input: SAMPLE_GIF,
+        quality,
+        compression,
+      });
+      if (result) {
+        setOutputUrl(result.url);
+        setOutputFileName(result.outputName);
+        setConvertedSize(result.sizeKB);
+        setProgress(100);
+        setLoadingMessage("");
+      }
     } else if (inputFile) {
       setOriginalSize(inputFile.size / 1024);
-      await convertToWebp(inputFile);
+      const result = await convertToWebpLib({
+        ffmpeg,
+        input: inputFile,
+        quality,
+        compression,
+      });
+      if (result) {
+        setOutputUrl(result.url);
+        setOutputFileName(result.outputName);
+        setConvertedSize(result.sizeKB);
+        setProgress(100);
+        setLoadingMessage("");
+      }
     }
   };
 
   const handleAddPortfolio = () => {
     alert("✅ 포트폴리오에 추가되었습니다!");
   };
-
-  // 🔹 화살표 있는 숫자 입력 (compression 전용)
-  const CompressionControl = ({
-    label,
-    value,
-    setValue,
-    min,
-    max,
-    step = 1,
-  }: {
-    label: string;
-    value: number;
-    setValue: (v: number | ((prev: number) => number)) => void;
-    min: number;
-    max: number;
-    step?: number;
-  }) => (
-    <div style={{ marginBottom: 20 }}>
-      <label
-        style={{
-          fontSize: 14,
-          color: "#555",
-          display: "block",
-          marginBottom: 6,
-        }}
-      >
-        {label}: {value}
-      </label>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          border: `1px solid ${THEME}33`,
-          borderRadius: 8,
-          overflow: "hidden",
-        }}
-      >
-        <button
-          onClick={() => setValue((prev) => (prev > min ? prev - step : prev))}
-          style={{
-            flex: "0 0 40px",
-            height: 38,
-            border: "none",
-            background: "transparent",
-            fontSize: 20,
-            color: THEME,
-            cursor: "pointer",
-          }}
-        >
-          −
-        </button>
-        <input
-          type="number"
-          min={min}
-          max={max}
-          value={value}
-          onChange={(e) => {
-            const newValue = Number(e.target.value);
-            if (newValue >= min && newValue <= max) setValue(newValue);
-          }}
-          style={{
-            flex: 1,
-            textAlign: "center",
-            border: "none",
-            outline: "none",
-            height: 38,
-            fontSize: 15,
-          }}
-        />
-        <button
-          onClick={() => setValue((prev) => (prev < max ? prev + step : prev))}
-          style={{
-            flex: "0 0 40px",
-            height: 38,
-            border: "none",
-            background: "transparent",
-            fontSize: 20,
-            color: THEME,
-            cursor: "pointer",
-          }}
-        >
-          +
-        </button>
-      </div>
-      <small style={{ color: "#777" }}>
-        0 = 빠름 / 6 = 최대 압축 (용량 ↓, 속도 ↓)
-      </small>
-    </div>
-  );
 
   return (
     <div
@@ -238,286 +117,49 @@ export default function App() {
         🎬 GIF → WebP 변환기
       </h1>
 
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: 16,
-          padding: "24px",
-          width: "100%",
-          maxWidth: 420,
-          boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
+      <ConversionControls
+        theme={THEME}
+        isSample={isSample}
+        setIsSample={(v) => {
+          setIsSample(
+            typeof v === "function"
+              ? (v as (p: boolean) => boolean)(isSample)
+              : v
+          );
         }}
-      >
-        {!ready ? (
-          <p style={{ textAlign: "center", color: "#999" }}>
-            ⚙️ FFmpeg WASM 로딩 중...
-          </p>
-        ) : (
-          <>
-            {/* 파일 입력 */}
-            {!isSample && (
-              <div style={{ marginBottom: 16 }}>
-                <label
-                  htmlFor="file"
-                  style={{
-                    display: "block",
-                    marginBottom: 8,
-                    fontSize: 14,
-                    color: "#555",
-                  }}
-                >
-                  변환할 GIF 파일 선택
-                </label>
-                <input
-                  id="file"
-                  type="file"
-                  accept="image/gif"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0] ?? null;
-                    setInputFile(file);
-                    setIsSample(false);
-                    setOutputUrl(null);
-                  }}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    padding: "10px 12px",
-                    border: `1px solid ${THEME}33`,
-                    borderRadius: 8,
-                    fontSize: 14,
-                    marginBottom: 12,
-                    color: "#333",
-                  }}
-                />
-                <small style={{ color: "#777" }}>
-                  또는 샘플 이미지를 사용할 수 있습니다.
-                </small>
-              </div>
-            )}
+        inputFile={inputFile}
+        setInputFile={(f) => {
+          setInputFile(f);
+          if (f) {
+            setIsSample(false);
+            setOutputUrl(null);
+          }
+        }}
+        quality={quality}
+        setQuality={setQuality}
+        compression={compression}
+        setCompression={setCompression}
+        onConvert={handleConvert}
+        ready={ready}
+        onToggleSample={onToggleSample}
+      />
 
-            {/* 🔹 품질 슬라이더 */}
-            <div style={{ marginBottom: 20 }}>
-              <label
-                style={{
-                  fontSize: 14,
-                  color: "#555",
-                  display: "block",
-                  marginBottom: 6,
-                }}
-              >
-                품질 : {quality}
-              </label>
-              <input
-                type="range"
-                min={10}
-                max={100}
-                value={quality}
-                onChange={(e) => setQuality(Number(e.target.value))}
-                style={{
-                  width: "100%",
-                  accentColor: THEME,
-                  cursor: "pointer",
-                }}
-              />
-            </div>
-
-            {/* 🔹 압축 컨트롤 */}
-            <CompressionControl
-              label="압축 강도"
-              value={compression}
-              setValue={setCompression}
-              min={0}
-              max={6}
-            />
-
-            {/* 버튼 */}
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-                marginBottom: 16,
-              }}
-            >
-              <button
-                onClick={() => {
-                  setIsSample((prev) => !prev);
-                  setInputFile(null);
-                  setOutputUrl(null);
-                }}
-                style={{
-                  flex: 1,
-                  padding: "10px 0",
-                  borderRadius: 8,
-                  border: isSample ? `2px solid ${THEME}` : "1px solid #ccc",
-                  background: isSample ? `${THEME}10` : "#fff",
-                  color: isSample ? THEME : "#333",
-                  fontWeight: 500,
-                  cursor: "pointer",
-                }}
-              >
-                {isSample ? "샘플 사용 중" : "샘플 사용"}
-              </button>
-
-              <button
-                onClick={handleConvert}
-                disabled={!isSample && !inputFile}
-                style={{
-                  flex: 1,
-                  padding: "10px 0",
-                  borderRadius: 8,
-                  border: `1px solid ${THEME}`,
-                  background: isSample || inputFile ? THEME : "#ccc",
-                  color: "#fff",
-                  fontWeight: 500,
-                  cursor: isSample || inputFile ? "pointer" : "not-allowed",
-                }}
-              >
-                변환하기
-              </button>
-            </div>
-
-            {/* 진행률 */}
-            {progress > 0 && progress < 100 && (
-              <div style={{ textAlign: "center" }}>
-                <div
-                  style={{
-                    height: 8,
-                    background: "#eee",
-                    borderRadius: 8,
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${progress}%`,
-                      height: "100%",
-                      background: THEME,
-                      transition: "width 0.2s ease",
-                    }}
-                  />
-                </div>
-                <p style={{ fontSize: 12, color: "#555", marginTop: 6 }}>
-                  {progress}% 완료
-                </p>
-                <p
-                  style={{
-                    fontSize: 13,
-                    color: THEME,
-                    fontWeight: 500,
-                    marginTop: 4,
-                  }}
-                >
-                  {loadingMessage}
-                </p>
-              </div>
-            )}
-          </>
-        )}
-      </div>
+      {/* 진행률 */}
+      {progress > 0 && progress < 100 && (
+        <ProgressBar progress={progress} theme={THEME} message={loadingMessage} />
+      )}
 
       {/* 결과 섹션 */}
-      {outputUrl && (
-        <div
-          style={{
-            marginTop: 32,
-            width: "100%",
-            maxWidth: 900,
-            background: "#fff",
-            borderRadius: 16,
-            padding: 24,
-            textAlign: "center",
-            boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
-          }}
-        >
-          <h3
-            style={{
-              fontSize: 18,
-              marginBottom: 20,
-              fontWeight: 500,
-              color: THEME,
-            }}
-          >
-            🖼 변환 결과 비교
-          </h3>
-          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-            <div>
-              <h4 style={{ fontSize: 15, fontWeight: 500 }}>원본</h4>
-              {isSample ? (
-                <img
-                  src="/sample.gif"
-                  alt="original"
-                  style={{ width: "100%", borderRadius: 12, marginBottom: 8 }}
-                />
-              ) : (
-                inputFile && (
-                  <img
-                    src={URL.createObjectURL(inputFile)}
-                    alt="original"
-                    style={{ width: "100%", borderRadius: 12, marginBottom: 8 }}
-                  />
-                )
-              )}
-              {originalSize && (
-                <p style={{ fontSize: 13, color: "#777" }}>
-                  {originalSize.toFixed(1)} KB
-                </p>
-              )}
-            </div>
-
-            <div>
-              <h4 style={{ fontSize: 15, fontWeight: 500 }}>변환본 (WebP)</h4>
-              <img
-                src={outputUrl}
-                alt="converted"
-                style={{ width: "100%", borderRadius: 12, marginBottom: 8 }}
-              />
-              {convertedSize && (
-                <p style={{ fontSize: 13, color: "#777" }}>
-                  {convertedSize.toFixed(1)} KB
-                </p>
-              )}
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-              marginTop: 20,
-            }}
-          >
-            <a
-              href={outputUrl}
-              download={outputFileName}
-              style={{
-                padding: "12px 0",
-                borderRadius: 8,
-                border: `1px solid ${THEME}`,
-                color: THEME,
-                textDecoration: "none",
-                fontWeight: 500,
-              }}
-            >
-              {outputFileName} 다운로드
-            </a>
-            <button
-              onClick={handleAddPortfolio}
-              style={{
-                padding: "12px 0",
-                borderRadius: 8,
-                border: "none",
-                background: THEME,
-                color: "#fff",
-                fontWeight: 500,
-                cursor: "pointer",
-              }}
-            >
-              📁 포트폴리오에 넣기
-            </button>
-          </div>
-        </div>
-      )}
+      <ResultPanel
+        theme={THEME}
+        outputUrl={outputUrl}
+        outputFileName={outputFileName}
+        isSample={isSample}
+        originalUrl={originalUrl}
+        originalSize={originalSize}
+        convertedSize={convertedSize}
+        onAddPortfolio={handleAddPortfolio}
+      />
     </div>
   );
 }
