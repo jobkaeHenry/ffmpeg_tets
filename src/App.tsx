@@ -3,7 +3,7 @@ import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
 
 export default function App() {
-  const THEME = "#05bcc6";
+  const THEME = "#05bcc6"; // 💎 메인 테마 컬러
 
   const [ffmpeg, setFfmpeg] = useState<FFmpeg | null>(null);
   const [ready, setReady] = useState(false);
@@ -18,7 +18,6 @@ export default function App() {
   const [convertedSize, setConvertedSize] = useState<number | null>(null);
   const [loadingMessage, setLoadingMessage] = useState("");
 
-  // 💡 진행 단계별 메시지
   const loadingMessages = [
     "🔍 GIF 파일을 메모리로 로드하고 있어요...",
     "📊 프레임 정보를 분석하는 중이에요...",
@@ -36,8 +35,6 @@ export default function App() {
       ff.on("progress", ({ progress }) => {
         const percent = Math.round(progress * 100);
         setProgress(percent);
-
-        // 100%를 7등분해서 문구 갱신
         const step = Math.floor(percent / (100 / loadingMessages.length));
         if (step >= 0 && step < loadingMessages.length) {
           setLoadingMessage(loadingMessages[step]);
@@ -50,17 +47,16 @@ export default function App() {
     })().catch(console.error);
   }, []);
 
-  // ✅ 변환 공통 함수
+  // ✅ 변환 함수
   const convertToWebp = async (input: File | string) => {
     if (!ffmpeg) return;
     setOutputUrl(null);
     setProgress(0);
     setConvertedSize(null);
 
-    // ✅ 파일명 자동 처리
     let baseName = "converted";
     if (typeof input !== "string" && input instanceof File) {
-      baseName = input.name.replace(/\.[^/.]+$/, ""); // 확장자 제거
+      baseName = input.name.replace(/\.[^/.]+$/, "");
     } else if (typeof input === "string" && input.includes("/")) {
       baseName =
         input
@@ -106,8 +102,7 @@ export default function App() {
     setProgress(100);
     setLoadingMessage("");
 
-    const convertedKB = blob.size / 1024;
-    setConvertedSize(convertedKB);
+    setConvertedSize(blob.size / 1024);
   };
 
   const handleConvert = async () => {
@@ -132,35 +127,37 @@ export default function App() {
     <div
       style={{
         minHeight: "100vh",
-        width: "100vw",
+        width: "100%",
         backgroundColor: "#fafafa",
         fontFamily: "'Pretendard', 'Noto Sans KR', sans-serif",
         color: "#111",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        padding: "60px 20px",
+        padding: "40px 16px",
       }}
     >
       <h1
         style={{
           fontWeight: 600,
-          fontSize: 26,
-          marginBottom: 40,
+          fontSize: "1.5rem",
+          marginBottom: 32,
           color: THEME,
+          textAlign: "center",
         }}
       >
         🎬 GIF → WebP 변환기
       </h1>
 
+      {/* 업로드 섹션 */}
       <div
         style={{
           background: "#fff",
           borderRadius: 16,
-          padding: 40,
-          width: 480,
-          boxSizing: "border-box",
-          transition: "all 0.2s ease",
+          padding: "24px",
+          width: "100%",
+          maxWidth: 420,
+          boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
         }}
       >
         {!ready ? (
@@ -220,7 +217,7 @@ export default function App() {
                   marginBottom: 6,
                 }}
               >
-                압축 강도 (품질) : {quality}
+                압축 강도 (품질): {quality}
               </label>
               <input
                 type="range"
@@ -240,8 +237,9 @@ export default function App() {
             <div
               style={{
                 display: "flex",
-                justifyContent: "space-between",
-                marginBottom: 20,
+                flexDirection: "row",
+                gap: 8,
+                marginBottom: 16,
               }}
             >
               <button
@@ -258,7 +256,6 @@ export default function App() {
                   background: isSample ? `${THEME}10` : "#fff",
                   color: isSample ? THEME : "#333",
                   fontWeight: 500,
-                  marginRight: 8,
                   cursor: "pointer",
                 }}
               >
@@ -277,7 +274,6 @@ export default function App() {
                   color: "#fff",
                   fontWeight: 500,
                   cursor: isSample || inputFile ? "pointer" : "not-allowed",
-                  transition: "all 0.2s ease",
                 }}
               >
                 변환하기
@@ -289,7 +285,7 @@ export default function App() {
               <div style={{ textAlign: "center" }}>
                 <div
                   style={{
-                    height: 10,
+                    height: 8,
                     background: "#eee",
                     borderRadius: 8,
                     overflow: "hidden",
@@ -304,14 +300,7 @@ export default function App() {
                     }}
                   />
                 </div>
-                <p
-                  style={{
-                    textAlign: "center",
-                    fontSize: 12,
-                    color: "#555",
-                    marginTop: 6,
-                  }}
-                >
+                <p style={{ fontSize: 12, color: "#555", marginTop: 6 }}>
                   {progress}% 완료
                 </p>
                 <p
@@ -334,12 +323,14 @@ export default function App() {
       {outputUrl && (
         <div
           style={{
-            marginTop: 40,
-            width: 900,
+            marginTop: 32,
+            width: "100%",
+            maxWidth: 900,
             background: "#fff",
             borderRadius: 16,
-            padding: 30,
+            padding: 24,
             textAlign: "center",
+            boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
           }}
         >
           <h3
@@ -352,22 +343,24 @@ export default function App() {
           >
             🖼 변환 결과 비교
           </h3>
+
+          {/* 반응형 비교 영역 */}
           <div
             style={{
               display: "flex",
-              justifyContent: "space-between",
-              gap: 20,
+              flexDirection: "column",
+              gap: 24,
             }}
           >
             {/* 원본 */}
-            <div style={{ flex: 1 }}>
+            <div>
               <h4 style={{ fontSize: 15, fontWeight: 500 }}>원본</h4>
               {isSample ? (
                 <img
                   src="/sample.gif"
                   alt="original"
                   style={{
-                    maxWidth: "100%",
+                    width: "100%",
                     borderRadius: 12,
                     marginBottom: 8,
                   }}
@@ -378,7 +371,7 @@ export default function App() {
                     src={URL.createObjectURL(inputFile)}
                     alt="original"
                     style={{
-                      maxWidth: "100%",
+                      width: "100%",
                       borderRadius: 12,
                       marginBottom: 8,
                     }}
@@ -393,13 +386,13 @@ export default function App() {
             </div>
 
             {/* 변환본 */}
-            <div style={{ flex: 1 }}>
+            <div>
               <h4 style={{ fontSize: 15, fontWeight: 500 }}>변환본 (WebP)</h4>
               <img
                 src={outputUrl}
                 alt="converted"
                 style={{
-                  maxWidth: "100%",
+                  width: "100%",
                   borderRadius: 12,
                   marginBottom: 8,
                 }}
@@ -412,15 +405,20 @@ export default function App() {
             </div>
           </div>
 
-          {/* 다운로드 & 포트폴리오 버튼 */}
-          <div style={{ marginTop: 20 }}>
+          {/* 버튼 */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+              marginTop: 20,
+            }}
+          >
             <a
               href={outputUrl}
               download={outputFileName}
               style={{
-                marginRight: 12,
-                display: "inline-block",
-                padding: "10px 20px",
+                padding: "12px 0",
                 borderRadius: 8,
                 border: `1px solid ${THEME}`,
                 color: THEME,
@@ -433,9 +431,9 @@ export default function App() {
             <button
               onClick={handleAddPortfolio}
               style={{
-                padding: "10px 20px",
+                padding: "12px 0",
                 borderRadius: 8,
-                border: `1px solid ${THEME}`,
+                border: "none",
                 background: THEME,
                 color: "#fff",
                 fontWeight: 500,
