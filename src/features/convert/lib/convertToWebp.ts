@@ -89,11 +89,13 @@ export async function convertToWebpOptimized({
   ffmpeg,
   input,
   preset = "balanced",
+  analysis,
   progressCallback,
 }: {
   ffmpeg: FFmpeg;
   input: File | string;
   preset?: OptimizationPreset;
+  analysis?: any;
   progressCallback?: (progress: number, message: string) => void;
 }): Promise<ConversionResult | null> {
   if (!ffmpeg) return null;
@@ -102,6 +104,7 @@ export async function convertToWebpOptimized({
     ffmpeg,
     input,
     preset,
+    analysis,
     progressCallback,
   });
 

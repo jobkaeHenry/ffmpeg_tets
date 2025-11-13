@@ -1,5 +1,6 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
+import type { AnalysisResult } from "./frameAnalyzer.worker";
 
 export interface OptimizationResult {
   url: string;
@@ -10,23 +11,26 @@ export interface OptimizationResult {
     quality: number;
     compression: number;
   };
+  analysis?: AnalysisResult;
 }
 
 export type OptimizationPreset = "high-quality" | "balanced" | "compressed";
 
 /**
  * 프리셋 기반 최적화
- * 복잡한 분석 없이 검증된 설정 조합 사용
+ * 프레임 분석 결과를 활용하여 중복 제거 최적화
  */
 export async function optimizeGifToWebp({
   ffmpeg,
   input,
   preset = "balanced",
+  analysis,
   progressCallback,
 }: {
   ffmpeg: FFmpeg;
   input: File | string;
   preset?: OptimizationPreset;
+  analysis?: AnalysisResult;
   progressCallback?: (progress: number, message: string) => void;
 }): Promise<OptimizationResult | null> {
   if (!ffmpeg) return null;
@@ -77,13 +81,127 @@ export async function optimizeGifToWebp({
   updateProgress(20, "파일 로드 중...");
   await ffmpeg.writeFile(inputName, await fetchFile(input));
 
-  // GIF 알파 채널 확인 (간단한 방법)
-  updateProgress(30, "이미지 분석 중...");
-  const hasAlpha = await checkAlphaChannel(ffmpeg, inputName);
+  // 알파 채널 확인 (분석 결과가 있으면 사용, 없으면 간단히 확인)
+  let hasAlpha = false;
+  if (analysis) {
+    hasAlpha = analysis.hasAlpha;
+    updateProgress(
+      30,
+      `프레임 분석 완료: ${analysis.uniqueFrames}/${analysis.totalFrames} 유지`
+    );
+  } else {
+    hasAlpha = await checkAlphaChannel(ffmpeg, inputName);
+    updateProgress(30, "이미지 분석 중...");
+  }
+
+  // FPS 설정 (분석 결과가 있으면 사용)
+  const fps = analysis ? analysis.fps : 10;
 
   updateProgress(50, `${preset} 프리셋으로 변환 중...`);
 
-  // 팔레트 최적화 적용
+  // 프레임 중복 제거가 활성화된 경우
+  if (analysis && analysis.compressionRatio < 0.9) {
+    updateProgress(
+      55,
+      `중복 프레임 제거 중... (${analysis.duplicateFrames}개 제거)`
+    );
+
+    // 중복 제거: select 필터 사용
+    // framesToKeep를 select 표현식으로 변환
+    const selectExpr = analysis.framesToKeep
+      .map((idx) => `eq(n\\,${idx})`)
+      .join("+");
+
+    try {
+      const filterChain = hasAlpha
+        ? `select='${selectExpr}',setpts=N/FRAME_RATE/TB,fps=${fps},scale=iw:-1:flags=${config.filter},format=yuva420p`
+        : `select='${selectExpr}',setpts=N/FRAME_RATE/TB,fps=${fps},scale=iw:-1:flags=${config.filter},format=yuv420p`;
+
+      await ffmpeg.exec([
+        "-i",
+        inputName,
+        "-filter:v",
+        filterChain,
+        "-c:v",
+        "libwebp",
+        "-q:v",
+        String(config.quality),
+        "-compression_level",
+        String(config.compression),
+        "-preset",
+        "picture",
+        "-pix_fmt",
+        hasAlpha ? "yuva420p" : "yuv420p",
+        "-loop",
+        "0",
+        "-an",
+        "-y",
+        outputName,
+      ]);
+    } catch (error) {
+      console.warn("select 필터 실패, 팔레트 모드로 전환:", error);
+      // select 실패 시 팔레트 모드로 폴백
+      await convertWithPalette(
+        ffmpeg,
+        inputName,
+        outputName,
+        config,
+        fps,
+        hasAlpha
+      );
+    }
+  } else {
+    // 팔레트 최적화 적용 (중복 제거 없음)
+    await convertWithPalette(
+      ffmpeg,
+      inputName,
+      outputName,
+      config,
+      fps,
+      hasAlpha
+    );
+  }
+
+  updateProgress(90, "결과 생성 중...");
+
+  const data = (await ffmpeg.readFile(outputName)) as Uint8Array;
+  const blob = new Blob([data.slice().buffer], { type: "image/webp" });
+  const url = URL.createObjectURL(blob);
+
+  // 정리
+  try {
+    await ffmpeg.deleteFile(inputName);
+    await ffmpeg.deleteFile(outputName);
+  } catch {
+    // 정리 실패 무시
+  }
+
+  updateProgress(100, "완료!");
+
+  return {
+    url,
+    outputName,
+    sizeKB: blob.size / 1024,
+    preset,
+    settings: {
+      quality: config.quality,
+      compression: config.compression,
+    },
+    analysis,
+  };
+}
+
+/**
+ * 팔레트 최적화 변환
+ */
+async function convertWithPalette(
+  ffmpeg: FFmpeg,
+  inputName: string,
+  outputName: string,
+  config: { quality: number; compression: number; filter: string; dither: string },
+  fps: number,
+  hasAlpha: boolean
+) {
   const paletteFile = "palette.png";
 
   try {
@@ -99,8 +217,8 @@ export async function optimizeGifToWebp({
 
     // 팔레트 적용하여 변환
     const filterComplex = hasAlpha
-      ? `fps=10,scale=iw:-1:flags=${config.filter}[x];[x][1:v]paletteuse=dither=${config.dither}`
-      : `fps=10,scale=iw:-1:flags=${config.filter},format=yuv420p[x];[x][1:v]paletteuse=dither=${config.dither}`;
+      ? `fps=${fps},scale=iw:-1:flags=${config.filter}[x];[x][1:v]paletteuse=dither=${config.dither}`
+      : `fps=${fps},scale=iw:-1:flags=${config.filter},format=yuv420p[x];[x][1:v]paletteuse=dither=${config.dither}`;
 
     await ffmpeg.exec([
       "-i",
@@ -123,13 +241,20 @@ export async function optimizeGifToWebp({
       "-y",
       outputName,
     ]);
+
+    // 팔레트 파일 삭제
+    try {
+      await ffmpeg.deleteFile(paletteFile);
+    } catch {
+      // 무시
+    }
   } catch (error) {
     // 팔레트 실패 시 기본 변환
     console.warn("팔레트 변환 실패, 기본 모드로 전환:", error);
 
     const filterChain = hasAlpha
-      ? `fps=10,scale=iw:-1:flags=${config.filter},format=yuva420p`
-      : `fps=10,scale=iw:-1:flags=${config.filter},format=yuv420p`;
+      ? `fps=${fps},scale=iw:-1:flags=${config.filter},format=yuva420p`
+      : `fps=${fps},scale=iw:-1:flags=${config.filter},format=yuv420p`;
 
     await ffmpeg.exec([
       "-i",
@@ -153,34 +278,6 @@ export async function optimizeGifToWebp({
       outputName,
     ]);
   }
-
-  updateProgress(90, "결과 생성 중...");
-
-  const data = (await ffmpeg.readFile(outputName)) as Uint8Array;
-  const blob = new Blob([data.slice().buffer], { type: "image/webp" });
-  const url = URL.createObjectURL(blob);
-
-  // 정리
-  try {
-    await ffmpeg.deleteFile(inputName);
-    await ffmpeg.deleteFile(outputName);
-    await ffmpeg.deleteFile(paletteFile);
-  } catch {
-    // 정리 실패 무시
-  }
-
-  updateProgress(100, "완료!");
-
-  return {
-    url,
-    outputName,
-    sizeKB: blob.size / 1024,
-    preset,
-    settings: {
-      quality: config.quality,
-      compression: config.compression,
-    },
-  };
 }
 
 /**
@@ -207,7 +304,6 @@ async function checkAlphaChannel(
     const data = (await ffmpeg.readFile(testFrame)) as Uint8Array;
 
     // PNG 헤더에서 컬러 타입 확인
-    // PNG 시그니처 확인
     if (
       data[0] === 0x89 &&
       data[1] === 0x50 &&
@@ -229,3 +325,4 @@ async function checkAlphaChannel(
     return false;
   }
 }
+

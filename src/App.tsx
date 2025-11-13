@@ -6,6 +6,7 @@ import {
   type ConversionResult,
 } from "./features/convert/lib/convertToWebp";
 import type { OptimizationPreset } from "./features/convert/lib/optimizer";
+import { useFrameAnalyzer } from "./features/convert/lib/useFrameAnalyzer";
 import { ConversionControls } from "./widgets/conversion/ConversionControls";
 import { ResultPanel } from "./widgets/result/ResultPanel";
 import { THEME } from "./shared/config/theme";
@@ -32,8 +33,14 @@ export default function App() {
   const [convertedSize, setConvertedSize] = useState<number | null>(null);
   const [useOptimizer, setUseOptimizer] = useState(true); // 최적화 모드
   const [preset, setPreset] = useState<OptimizationPreset>("balanced");
+  const [enableFrameAnalysis, setEnableFrameAnalysis] = useState(true); // 프레임 분석 활성화
+
+  // 프레임 분석 hook
+  const frameAnalyzer = useFrameAnalyzer();
+
   const onToggleSample = () => {
     setOutputUrl(null);
+    frameAnalyzer.reset();
   };
 
   const originalUrl = useMemo(() => {
@@ -54,6 +61,13 @@ export default function App() {
     };
   }, [outputUrl]);
 
+  // 파일 업로드 시 자동 분석
+  useEffect(() => {
+    if (inputFile && enableFrameAnalysis && useOptimizer) {
+      frameAnalyzer.analyze(inputFile);
+    }
+  }, [inputFile, enableFrameAnalysis, useOptimizer]);
+
   const handleConvert = async () => {
     if (!ffmpeg) return;
     setOutputUrl(null);
@@ -68,11 +82,19 @@ export default function App() {
         const blob = await res.blob();
         setOriginalSize(blob.size / 1024);
 
+        // 샘플 파일도 분석 (활성화된 경우)
+        let analysisResult = frameAnalyzer.result;
+        if (enableFrameAnalysis && useOptimizer && !analysisResult) {
+          await frameAnalyzer.analyze(blob);
+          analysisResult = frameAnalyzer.result;
+        }
+
         if (useOptimizer) {
           result = await convertToWebpOptimized({
             ffmpeg,
             input: SAMPLE_GIF,
             preset,
+            analysis: analysisResult,
             progressCallback: (prog, msg) => {
               setProgress(prog);
               setLoadingMessage(msg);
@@ -89,11 +111,16 @@ export default function App() {
       } else if (inputFile) {
         setOriginalSize(inputFile.size / 1024);
 
+        // 분석 결과 사용
+        const analysisResult =
+          enableFrameAnalysis && useOptimizer ? frameAnalyzer.result : undefined;
+
         if (useOptimizer) {
           result = await convertToWebpOptimized({
             ffmpeg,
             input: inputFile,
             preset,
+            analysis: analysisResult,
             progressCallback: (prog, msg) => {
               setProgress(prog);
               setLoadingMessage(msg);
@@ -245,21 +272,110 @@ export default function App() {
                 description="Q75 · 최소 용량"
               />
             </div>
-            <p
-              style={{
-                marginTop: 12,
-                fontSize: "0.85rem",
-                color: "#666",
-                lineHeight: 1.5,
-              }}
-            >
-              팔레트 최적화 + 디더링으로 색상 품질을 유지하면서 용량을 줄입니다.
-            </p>
+
+            {/* 프레임 분석 옵션 */}
+            <div style={{ marginTop: 16 }}>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  cursor: "pointer",
+                  gap: 8,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={enableFrameAnalysis}
+                  onChange={(e) => setEnableFrameAnalysis(e.target.checked)}
+                  style={{ cursor: "pointer" }}
+                />
+                <span style={{ fontSize: "0.9rem", fontWeight: 500 }}>
+                  프레임 중복 제거 (Web Worker)
+                </span>
+              </label>
+              <p
+                style={{
+                  marginTop: 8,
+                  fontSize: "0.85rem",
+                  color: "#666",
+                  lineHeight: 1.5,
+                }}
+              >
+                백그라운드에서 중복 프레임을 분석하여 용량을 추가로 절감합니다.
+              </p>
+            </div>
           </div>
         )}
       </div>
 
-      {/* 진행률 */}
+      {/* 프레임 분석 진행률 */}
+      {frameAnalyzer.analyzing && frameAnalyzer.progress && (
+        <div
+          style={{
+            marginTop: 16,
+            padding: 16,
+            backgroundColor: "white",
+            borderRadius: 8,
+            boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+            maxWidth: 600,
+            width: "100%",
+          }}
+        >
+          <div style={{ marginBottom: 8 }}>
+            <span style={{ fontSize: "0.9rem", fontWeight: 500 }}>
+              프레임 분석 중...
+            </span>
+          </div>
+          <ProgressBar
+            progress={frameAnalyzer.progress.progress}
+            theme={THEME}
+            message={frameAnalyzer.progress.message}
+          />
+        </div>
+      )}
+
+      {/* 분석 결과 표시 */}
+      {frameAnalyzer.result && !frameAnalyzer.analyzing && (
+        <div
+          style={{
+            marginTop: 16,
+            padding: 16,
+            backgroundColor: "#f0fdf4",
+            borderRadius: 8,
+            border: "1px solid #86efac",
+            maxWidth: 600,
+            width: "100%",
+          }}
+        >
+          <h3
+            style={{
+              fontSize: "0.95rem",
+              fontWeight: 600,
+              marginBottom: 12,
+              color: "#16a34a",
+            }}
+          >
+            ✓ 분석 완료
+          </h3>
+          <div style={{ fontSize: "0.85rem", color: "#166534", lineHeight: 1.8 }}>
+            <div>
+              총 프레임: {frameAnalyzer.result.totalFrames}개 →{" "}
+              {frameAnalyzer.result.uniqueFrames}개 유지
+            </div>
+            <div>
+              중복 제거: {frameAnalyzer.result.duplicateFrames}개 (
+              {Math.round((1 - frameAnalyzer.result.compressionRatio) * 100)}%
+              감소)
+            </div>
+            <div>
+              해상도: {frameAnalyzer.result.width}×{frameAnalyzer.result.height} ·{" "}
+              {frameAnalyzer.result.fps} FPS
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 변환 진행률 */}
       {progress > 0 && progress < 100 && (
         <ProgressBar
           progress={progress}
