@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { useFFmpeg } from "./shared/lib/useFFmpeg";
-import { convertToWebp as convertToWebpLib } from "./features/convert/lib/convertToWebp";
+import {
+  convertToWebp as convertToWebpLib,
+  convertToWebpOptimized,
+  type ConversionResult,
+} from "./features/convert/lib/convertToWebp";
 import { ConversionControls } from "./widgets/conversion/ConversionControls";
 import { ResultPanel } from "./widgets/result/ResultPanel";
 import { THEME } from "./shared/config/theme";
 import { ProgressBar } from "./shared/ui/ProgressBar";
 import { SAMPLE_GIF } from "./shared/constants/sample";
+import type { QualityMetrics } from "./features/convert/lib/qualityMetrics";
 
 export default function App() {
   const {
@@ -25,6 +30,17 @@ export default function App() {
   const [compression, setCompression] = useState(4); // 🔹 compression_level
   const [originalSize, setOriginalSize] = useState<number | null>(null);
   const [convertedSize, setConvertedSize] = useState<number | null>(null);
+  const [useOptimizer, setUseOptimizer] = useState(true); // 최적화 모드
+  const [qualityMetrics, setQualityMetrics] = useState<QualityMetrics | null>(
+    null
+  );
+  const [metadata, setMetadata] = useState<{
+    frameCount: number;
+    fps: number;
+    width: number;
+    height: number;
+    hasAlpha: boolean;
+  } | null>(null);
   const onToggleSample = () => {
     setOutputUrl(null);
   };
@@ -51,39 +67,70 @@ export default function App() {
     if (!ffmpeg) return;
     setOutputUrl(null);
     setConvertedSize(null);
+    setQualityMetrics(null);
+    setMetadata(null);
     resetProgress();
-    if (isSample) {
-      const res = await fetch(SAMPLE_GIF);
-      const blob = await res.blob();
-      setOriginalSize(blob.size / 1024);
-      const result = await convertToWebpLib({
-        ffmpeg,
-        input: SAMPLE_GIF,
-        quality,
-        compression,
-      });
+
+    try {
+      let result: ConversionResult | null = null;
+
+      if (isSample) {
+        const res = await fetch(SAMPLE_GIF);
+        const blob = await res.blob();
+        setOriginalSize(blob.size / 1024);
+
+        if (useOptimizer) {
+          result = await convertToWebpOptimized({
+            ffmpeg,
+            input: SAMPLE_GIF,
+            progressCallback: (prog, msg) => {
+              setProgress(prog);
+              setLoadingMessage(msg);
+            },
+          });
+        } else {
+          result = await convertToWebpLib({
+            ffmpeg,
+            input: SAMPLE_GIF,
+            quality,
+            compression,
+          });
+        }
+      } else if (inputFile) {
+        setOriginalSize(inputFile.size / 1024);
+
+        if (useOptimizer) {
+          result = await convertToWebpOptimized({
+            ffmpeg,
+            input: inputFile,
+            progressCallback: (prog, msg) => {
+              setProgress(prog);
+              setLoadingMessage(msg);
+            },
+          });
+        } else {
+          result = await convertToWebpLib({
+            ffmpeg,
+            input: inputFile,
+            quality,
+            compression,
+          });
+        }
+      }
+
       if (result) {
         setOutputUrl(result.url);
         setOutputFileName(result.outputName);
         setConvertedSize(result.sizeKB);
+        setQualityMetrics(result.metrics || null);
+        setMetadata(result.metadata || null);
         setProgress(100);
         setLoadingMessage("");
       }
-    } else if (inputFile) {
-      setOriginalSize(inputFile.size / 1024);
-      const result = await convertToWebpLib({
-        ffmpeg,
-        input: inputFile,
-        quality,
-        compression,
-      });
-      if (result) {
-        setOutputUrl(result.url);
-        setOutputFileName(result.outputName);
-        setConvertedSize(result.sizeKB);
-        setProgress(100);
-        setLoadingMessage("");
-      }
+    } catch (error) {
+      console.error("변환 실패:", error);
+      setLoadingMessage(`변환 실패: ${error}`);
+      setProgress(0);
     }
   };
 
@@ -144,6 +191,52 @@ export default function App() {
         onToggleSample={onToggleSample}
       />
 
+      {/* 최적화 모드 토글 */}
+      <div
+        style={{
+          marginTop: 16,
+          padding: 16,
+          backgroundColor: "white",
+          borderRadius: 8,
+          boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+          maxWidth: 600,
+          width: "100%",
+        }}
+      >
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            cursor: "pointer",
+            gap: 8,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={useOptimizer}
+            onChange={(e) => setUseOptimizer(e.target.checked)}
+            style={{ cursor: "pointer" }}
+          />
+          <span style={{ fontSize: "0.95rem", fontWeight: 500 }}>
+            자동 최적화 모드 (AI 품질 분석)
+          </span>
+        </label>
+        {useOptimizer && (
+          <p
+            style={{
+              marginTop: 8,
+              fontSize: "0.85rem",
+              color: "#666",
+              lineHeight: 1.5,
+            }}
+          >
+            여러 설정 조합을 테스트하여 최적의 품질/용량 비율을 자동 탐색합니다.
+            <br />
+            SSIM ≥ 0.98, ΔE ≤ 2.3, 엣지 보존율 ≥ 95% 기준을 충족합니다.
+          </p>
+        )}
+      </div>
+
       {/* 진행률 */}
       {progress > 0 && progress < 100 && (
         <ProgressBar
@@ -151,6 +244,68 @@ export default function App() {
           theme={THEME}
           message={loadingMessage}
         />
+      )}
+
+      {/* 품질 메트릭 표시 */}
+      {qualityMetrics && (
+        <div
+          style={{
+            marginTop: 24,
+            padding: 20,
+            backgroundColor: "white",
+            borderRadius: 8,
+            boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+            maxWidth: 600,
+            width: "100%",
+          }}
+        >
+          <h3
+            style={{
+              fontSize: "1rem",
+              fontWeight: 600,
+              marginBottom: 16,
+              color: THEME,
+            }}
+          >
+            품질 분석 결과
+          </h3>
+          <div style={{ display: "grid", gap: 12 }}>
+            <MetricRow
+              label="SSIM (구조적 유사도)"
+              value={qualityMetrics.ssim.toFixed(4)}
+              target="≥ 0.98"
+              pass={qualityMetrics.ssim >= 0.98}
+            />
+            <MetricRow
+              label="PSNR (신호 대 잡음비)"
+              value={`${qualityMetrics.psnr.toFixed(2)} dB`}
+              target="> 30 dB"
+              pass={qualityMetrics.psnr > 30}
+            />
+            <MetricRow
+              label="ΔE2000 (색차)"
+              value={qualityMetrics.deltaE.toFixed(2)}
+              target="≤ 2.3"
+              pass={qualityMetrics.deltaE <= 2.3}
+            />
+            <MetricRow
+              label="엣지 보존율"
+              value={`${(qualityMetrics.edgePreservation * 100).toFixed(1)}%`}
+              target="≥ 95%"
+              pass={qualityMetrics.edgePreservation >= 0.95}
+            />
+          </div>
+          {metadata && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #eee" }}>
+              <p style={{ fontSize: "0.9rem", color: "#666", margin: "4px 0" }}>
+                프레임: {metadata.frameCount}개 | FPS: {metadata.fps} | 해상도: {metadata.width}×{metadata.height}
+              </p>
+              <p style={{ fontSize: "0.9rem", color: "#666", margin: "4px 0" }}>
+                알파 채널: {metadata.hasAlpha ? "있음" : "없음"}
+              </p>
+            </div>
+          )}
+        </div>
       )}
 
       {/* 결과 섹션 */}
@@ -164,6 +319,60 @@ export default function App() {
         convertedSize={convertedSize}
         onAddPortfolio={handleAddPortfolio}
       />
+    </div>
+  );
+}
+
+// 품질 메트릭 행 컴포넌트
+function MetricRow({
+  label,
+  value,
+  target,
+  pass,
+}: {
+  label: string;
+  value: string;
+  target: string;
+  pass: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "8px 12px",
+        backgroundColor: pass ? "#f0fdf4" : "#fef2f2",
+        borderRadius: 6,
+        border: `1px solid ${pass ? "#86efac" : "#fecaca"}`,
+      }}
+    >
+      <div>
+        <div style={{ fontSize: "0.9rem", fontWeight: 500, color: "#111" }}>
+          {label}
+        </div>
+        <div style={{ fontSize: "0.8rem", color: "#666", marginTop: 2 }}>
+          목표: {target}
+        </div>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <span
+          style={{
+            fontSize: "1rem",
+            fontWeight: 600,
+            color: pass ? "#16a34a" : "#dc2626",
+          }}
+        >
+          {value}
+        </span>
+        <span style={{ fontSize: "1.2rem" }}>{pass ? "✓" : "✗"}</span>
+      </div>
     </div>
   );
 }
