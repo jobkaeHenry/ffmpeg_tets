@@ -1,25 +1,20 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
-import { optimizeGifToWebp } from "./optimizer";
-import type { QualityMetrics } from "./qualityMetrics";
+import { optimizeGifToWebp, type OptimizationPreset } from "./optimizer";
 
 export interface ConversionResult {
   url: string;
   outputName: string;
   sizeKB: number;
-  metrics?: QualityMetrics;
-  compressionRatio?: number;
-  metadata?: {
-    frameCount: number;
-    fps: number;
-    width: number;
-    height: number;
-    hasAlpha: boolean;
+  preset?: string;
+  settings?: {
+    quality: number;
+    compression: number;
   };
 }
 
 /**
- * 기본 변환 (레거시 - 하위 호환성)
+ * 기본 변환
  */
 export async function convertToWebp({
   ffmpeg,
@@ -50,7 +45,7 @@ export async function convertToWebp({
     "-i",
     inputName,
     "-filter:v",
-    "scale=iw:-1:flags=lanczos,format=rgba",
+    "fps=10,scale=iw:-1:flags=lanczos",
     "-c:v",
     "libwebp",
     "-q:v",
@@ -59,8 +54,6 @@ export async function convertToWebp({
     String(compression),
     "-preset",
     "picture",
-    "-pix_fmt",
-    "rgba",
     "-loop",
     "0",
     "-an",
@@ -81,19 +74,26 @@ export async function convertToWebp({
     // 정리 실패 무시
   }
 
-  return { url, outputName, sizeKB: blob.size / 1024 };
+  return {
+    url,
+    outputName,
+    sizeKB: blob.size / 1024,
+    settings: { quality, compression },
+  };
 }
 
 /**
- * 최적화된 변환 (자동 품질/압축 탐색)
+ * 프리셋 기반 최적화 변환
  */
 export async function convertToWebpOptimized({
   ffmpeg,
   input,
+  preset = "balanced",
   progressCallback,
 }: {
   ffmpeg: FFmpeg;
   input: File | string;
+  preset?: OptimizationPreset;
   progressCallback?: (progress: number, message: string) => void;
 }): Promise<ConversionResult | null> {
   if (!ffmpeg) return null;
@@ -101,6 +101,7 @@ export async function convertToWebpOptimized({
   const result = await optimizeGifToWebp({
     ffmpeg,
     input,
+    preset,
     progressCallback,
   });
 
@@ -110,14 +111,7 @@ export async function convertToWebpOptimized({
     url: result.url,
     outputName: result.outputName,
     sizeKB: result.sizeKB,
-    metrics: result.metrics,
-    compressionRatio: result.compressionRatio,
-    metadata: {
-      frameCount: result.metadata.frameCount,
-      fps: result.metadata.fps,
-      width: result.metadata.width,
-      height: result.metadata.height,
-      hasAlpha: result.metadata.hasAlpha,
-    },
+    preset: result.preset,
+    settings: result.settings,
   };
 }

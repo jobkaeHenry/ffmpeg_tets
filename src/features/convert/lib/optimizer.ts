@@ -1,52 +1,32 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
-import {
-  analyzeGifMetadata,
-  analyzePaletteSize,
-  type GifMetadata,
-} from "./gifAnalyzer";
-import {
-  calculateAllMetrics,
-  type QualityMetrics,
-} from "./qualityMetrics";
-
-export interface OptimizationConfig {
-  quality: number;
-  compression: number;
-  preset: string;
-  scaleFilter: string;
-  ditherMethod: string;
-  pixelFormat: string;
-  usePalette: boolean;
-}
 
 export interface OptimizationResult {
   url: string;
   outputName: string;
   sizeKB: number;
-  config: OptimizationConfig;
-  metrics: QualityMetrics;
-  metadata: GifMetadata;
-  compressionRatio: number;
+  preset: string;
+  settings: {
+    quality: number;
+    compression: number;
+  };
 }
 
-interface CandidateResult {
-  blob: Blob;
-  config: OptimizationConfig;
-  sizeKB: number;
-}
+export type OptimizationPreset = "high-quality" | "balanced" | "compressed";
 
 /**
- * 최적화된 GIF → WebP 변환
- * 여러 설정 조합을 테스트하여 최적의 결과를 자동 선택
+ * 프리셋 기반 최적화
+ * 복잡한 분석 없이 검증된 설정 조합 사용
  */
 export async function optimizeGifToWebp({
   ffmpeg,
   input,
+  preset = "balanced",
   progressCallback,
 }: {
   ffmpeg: FFmpeg;
   input: File | string;
+  preset?: OptimizationPreset;
   progressCallback?: (progress: number, message: string) => void;
 }): Promise<OptimizationResult | null> {
   if (!ffmpeg) return null;
@@ -57,126 +37,33 @@ export async function optimizeGifToWebp({
     }
   };
 
-  updateProgress(5, "GIF 메타데이터 분석 중...");
+  // 프리셋별 설정
+  const presetConfigs = {
+    "high-quality": {
+      quality: 90,
+      compression: 4,
+      filter: "lanczos",
+      dither: "floyd_steinberg",
+    },
+    balanced: {
+      quality: 85,
+      compression: 5,
+      filter: "lanczos",
+      dither: "bayer:bayer_scale=2",
+    },
+    compressed: {
+      quality: 75,
+      compression: 6,
+      filter: "spline",
+      dither: "bayer:bayer_scale=3",
+    },
+  };
 
-  // 1단계: GIF 분석
-  const metadata = await analyzeGifMetadata(ffmpeg, input);
-  updateProgress(15, `프레임 분석 완료: ${metadata.frameCount}개 프레임`);
+  const config = presetConfigs[preset];
 
-  const paletteSize = await analyzePaletteSize(input);
-  updateProgress(20, `팔레트 크기: ${paletteSize}색`);
+  updateProgress(10, "GIF 메타데이터 확인 중...");
 
-  // 2단계: 설정 조합 생성
-  const configs = generateOptimizationConfigs(metadata, paletteSize);
-  updateProgress(
-    25,
-    `${configs.length}개 설정 조합 테스트 시작...`
-  );
-
-  // 3단계: 각 설정으로 변환 테스트
-  const candidates: CandidateResult[] = [];
-  const inputName = "opt_input.gif";
-  await ffmpeg.writeFile(inputName, await fetchFile(input));
-
-  for (let i = 0; i < configs.length; i++) {
-    const config = configs[i];
-    const progress = 25 + (i / configs.length) * 50;
-    updateProgress(
-      progress,
-      `테스트 중 (${i + 1}/${configs.length}): Q=${config.quality}, C=${config.compression}`
-    );
-
-    try {
-      const result = await convertWithConfig(
-        ffmpeg,
-        inputName,
-        config,
-        metadata,
-        i
-      );
-      if (result) {
-        candidates.push(result);
-      }
-    } catch (error) {
-      console.warn(`Config ${i} failed:`, error);
-      // 실패한 설정은 건너뛰기
-      continue;
-    }
-  }
-
-  if (candidates.length === 0) {
-    throw new Error("모든 변환 시도가 실패했습니다");
-  }
-
-  updateProgress(75, "품질 평가 중...");
-
-  // 4단계: 원본 GIF를 첫 프레임 PNG로 변환 (품질 비교용)
-  const originalBlob = await extractFirstFrame(ffmpeg, inputName);
-
-  // 5단계: 품질 메트릭 계산 및 최적 후보 선택
-  let bestCandidate: CandidateResult | null = null;
-  let bestScore = -Infinity;
-
-  for (let i = 0; i < candidates.length; i++) {
-    const candidate = candidates[i];
-    const progress = 75 + (i / candidates.length) * 15;
-    updateProgress(progress, `품질 측정 (${i + 1}/${candidates.length})`);
-
-    try {
-      const metrics = await calculateAllMetrics(originalBlob, candidate.blob);
-
-      // 품질 기준: SSIM ≥ 0.98, ΔE ≤ 2.3, Edge ≥ 0.95
-      const meetsQualityCriteria =
-        metrics.ssim >= 0.98 &&
-        metrics.deltaE <= 2.3 &&
-        metrics.edgePreservation >= 0.95;
-
-      // 완화된 기준: SSIM ≥ 0.95
-      const meetsRelaxedCriteria = metrics.ssim >= 0.95;
-
-      if (meetsQualityCriteria || meetsRelaxedCriteria) {
-        // 점수 계산: 품질 유지하면서 용량 최소화
-        const qualityScore =
-          metrics.ssim * 0.4 +
-          (1 - metrics.deltaE / 10) * 0.3 +
-          metrics.edgePreservation * 0.3;
-
-        const sizeScore = 1 / candidate.sizeKB;
-        const score = qualityScore * 0.7 + sizeScore * 0.3;
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestCandidate = candidate;
-        }
-      }
-    } catch (error) {
-      console.warn(`Quality check failed for candidate ${i}:`, error);
-      continue;
-    }
-  }
-
-  // 품질 기준을 만족하는 후보가 없으면 가장 높은 품질의 후보 선택
-  if (!bestCandidate && candidates.length > 0) {
-    updateProgress(90, "품질 기준 완화, 최상 품질 선택 중...");
-    bestCandidate = candidates.reduce((best, current) =>
-      current.config.quality > best.config.quality ? current : best
-    );
-  }
-
-  if (!bestCandidate) {
-    throw new Error("최적 설정을 찾을 수 없습니다");
-  }
-
-  updateProgress(95, "최종 품질 확인 중...");
-
-  // 최종 메트릭 계산
-  const finalMetrics = await calculateAllMetrics(
-    originalBlob,
-    bestCandidate.blob
-  );
-
-  const url = URL.createObjectURL(bestCandidate.blob);
-
+  // 파일명 추출
   let baseName = "converted";
   if (typeof input !== "string" && input instanceof File) {
     baseName = input.name.replace(/\.[^/.]+$/, "");
@@ -184,119 +71,36 @@ export async function optimizeGifToWebp({
     baseName = input.split("/").pop()?.replace(/\.[^/.]+$/, "") || "sample";
   }
 
+  const inputName = "input.gif";
   const outputName = `${baseName}_optimized.webp`;
 
-  // 원본 크기 계산
-  const originalSize =
-    input instanceof File
-      ? input.size / 1024
-      : (await (await fetch(input)).blob()).size / 1024;
+  updateProgress(20, "파일 로드 중...");
+  await ffmpeg.writeFile(inputName, await fetchFile(input));
 
-  const compressionRatio = bestCandidate.sizeKB / originalSize;
+  // GIF 알파 채널 확인 (간단한 방법)
+  updateProgress(30, "이미지 분석 중...");
+  const hasAlpha = await checkAlphaChannel(ffmpeg, inputName);
 
-  // 임시 파일 정리
+  updateProgress(50, `${preset} 프리셋으로 변환 중...`);
+
+  // 팔레트 최적화 적용
+  const paletteFile = "palette.png";
+
   try {
-    await ffmpeg.deleteFile(inputName);
-  } catch {
-    // 정리 실패 무시
-  }
-
-  updateProgress(100, "변환 완료!");
-
-  return {
-    url,
-    outputName,
-    sizeKB: bestCandidate.sizeKB,
-    config: bestCandidate.config,
-    metrics: finalMetrics,
-    metadata,
-    compressionRatio,
-  };
-}
-
-/**
- * 메타데이터 기반 최적화 설정 조합 생성
- */
-function generateOptimizationConfigs(
-  metadata: GifMetadata,
-  paletteSize: number
-): OptimizationConfig[] {
-  const configs: OptimizationConfig[] = [];
-
-  // 품질 레벨: 높음(85), 중간(80), 낮음(75)
-  const qualityLevels = [85, 80, 75];
-
-  // 압축 레벨: 최고(5), 높음(4), 중간(3)
-  const compressionLevels = [5, 4, 3];
-
-  // 스케일 필터: Lanczos (기본), Spline36 (대안)
-  const scaleFilters = ["lanczos", "spline36"];
-
-  // 디더링: Bayer, Floyd-Steinberg
-  const ditherMethods = ["bayer:bayer_scale=2", "floyd_steinberg"];
-
-  // 알파 채널 여부에 따른 픽셀 포맷
-  const pixelFormats = metadata.hasAlpha ? ["yuva444p"] : ["yuv420p"];
-
-  // 팔레트 사용 여부 (256색 이하면 팔레트 최적화)
-  const usePalette = paletteSize > 0 && paletteSize <= 256;
-
-  // 조합 생성 (너무 많으면 성능 문제 → 상위 조합만)
-  for (const quality of qualityLevels) {
-    for (const compression of compressionLevels) {
-      // 각 품질에 대해 2개의 조합만 생성 (성능 최적화)
-      if (configs.length >= 6) break;
-
-      const scaleFilter = scaleFilters[0]; // 기본 Lanczos
-      const dither = ditherMethods[0]; // 기본 Bayer
-
-      configs.push({
-        quality,
-        compression,
-        preset: "picture",
-        scaleFilter,
-        ditherMethod: dither,
-        pixelFormat: pixelFormats[0],
-        usePalette,
-      });
-    }
-  }
-
-  return configs;
-}
-
-/**
- * 특정 설정으로 변환 실행
- */
-async function convertWithConfig(
-  ffmpeg: FFmpeg,
-  inputName: string,
-  config: OptimizationConfig,
-  metadata: GifMetadata,
-  index: number
-): Promise<CandidateResult | null> {
-  const outputName = `candidate_${index}.webp`;
-
-  // 필터 구성
-  let filterChain = `fps=${metadata.fps}`;
-  filterChain += `,scale=iw:-1:flags=${config.scaleFilter}`;
-
-  // 팔레트 사용 시
-  if (config.usePalette) {
-    const paletteFile = `palette_${index}.png`;
-
     // 팔레트 생성
     await ffmpeg.exec([
       "-i",
       inputName,
       "-vf",
-      `palettegen=max_colors=256:stats_mode=diff`,
+      "palettegen=max_colors=256:stats_mode=diff",
       "-y",
       paletteFile,
     ]);
 
-    // 팔레트 적용
-    filterChain += `[x];[x][1:v]paletteuse=dither=${config.ditherMethod}`;
+    // 팔레트 적용하여 변환
+    const filterComplex = hasAlpha
+      ? `fps=10,scale=iw:-1:flags=${config.filter}[x];[x][1:v]paletteuse=dither=${config.dither}`
+      : `fps=10,scale=iw:-1:flags=${config.filter},format=yuv420p[x];[x][1:v]paletteuse=dither=${config.dither}`;
 
     await ffmpeg.exec([
       "-i",
@@ -304,7 +108,7 @@ async function convertWithConfig(
       "-i",
       paletteFile,
       "-filter_complex",
-      filterChain,
+      filterComplex,
       "-c:v",
       "libwebp",
       "-q:v",
@@ -312,23 +116,20 @@ async function convertWithConfig(
       "-compression_level",
       String(config.compression),
       "-preset",
-      config.preset,
+      "picture",
       "-loop",
       "0",
       "-an",
       "-y",
       outputName,
     ]);
+  } catch (error) {
+    // 팔레트 실패 시 기본 변환
+    console.warn("팔레트 변환 실패, 기본 모드로 전환:", error);
 
-    // 팔레트 파일 삭제
-    try {
-      await ffmpeg.deleteFile(paletteFile);
-    } catch {
-      // 무시
-    }
-  } else {
-    // 일반 변환
-    filterChain += `,format=${config.pixelFormat}`;
+    const filterChain = hasAlpha
+      ? `fps=10,scale=iw:-1:flags=${config.filter},format=yuva420p`
+      : `fps=10,scale=iw:-1:flags=${config.filter},format=yuv420p`;
 
     await ffmpeg.exec([
       "-i",
@@ -342,9 +143,9 @@ async function convertWithConfig(
       "-compression_level",
       String(config.compression),
       "-preset",
-      config.preset,
+      "picture",
       "-pix_fmt",
-      config.pixelFormat,
+      hasAlpha ? "yuva420p" : "yuv420p",
       "-loop",
       "0",
       "-an",
@@ -353,50 +154,78 @@ async function convertWithConfig(
     ]);
   }
 
+  updateProgress(90, "결과 생성 중...");
+
   const data = (await ffmpeg.readFile(outputName)) as Uint8Array;
   const blob = new Blob([data.slice().buffer], { type: "image/webp" });
+  const url = URL.createObjectURL(blob);
 
-  // 출력 파일 삭제
+  // 정리
   try {
+    await ffmpeg.deleteFile(inputName);
     await ffmpeg.deleteFile(outputName);
+    await ffmpeg.deleteFile(paletteFile);
   } catch {
-    // 무시
+    // 정리 실패 무시
   }
 
+  updateProgress(100, "완료!");
+
   return {
-    blob,
-    config,
+    url,
+    outputName,
     sizeKB: blob.size / 1024,
+    preset,
+    settings: {
+      quality: config.quality,
+      compression: config.compression,
+    },
   };
 }
 
 /**
- * GIF의 첫 프레임을 PNG로 추출 (품질 비교용)
+ * 간단한 알파 채널 확인
+ * 첫 프레임만 PNG로 변환하여 확인
  */
-async function extractFirstFrame(
+async function checkAlphaChannel(
   ffmpeg: FFmpeg,
   inputName: string
-): Promise<Blob> {
-  const frameName = "first_frame.png";
-
-  await ffmpeg.exec([
-    "-i",
-    inputName,
-    "-vframes",
-    "1",
-    "-f",
-    "image2",
-    frameName,
-  ]);
-
-  const data = (await ffmpeg.readFile(frameName)) as Uint8Array;
-  const blob = new Blob([data.slice().buffer], { type: "image/png" });
+): Promise<boolean> {
+  const testFrame = "alpha_test.png";
 
   try {
-    await ffmpeg.deleteFile(frameName);
-  } catch {
-    // 무시
-  }
+    await ffmpeg.exec([
+      "-i",
+      inputName,
+      "-vframes",
+      "1",
+      "-f",
+      "image2",
+      testFrame,
+    ]);
 
-  return blob;
+    const data = (await ffmpeg.readFile(testFrame)) as Uint8Array;
+
+    // PNG 헤더에서 컬러 타입 확인
+    // PNG 시그니처 확인
+    if (
+      data[0] === 0x89 &&
+      data[1] === 0x50 &&
+      data[2] === 0x4e &&
+      data[3] === 0x47
+    ) {
+      // IHDR 청크의 컬러 타입 (인덱스 25)
+      const colorType = data[25];
+      // 4 = Grayscale+Alpha, 6 = RGBA
+      const hasAlpha = colorType === 4 || colorType === 6;
+
+      await ffmpeg.deleteFile(testFrame);
+      return hasAlpha;
+    }
+
+    await ffmpeg.deleteFile(testFrame);
+    return false;
+  } catch {
+    return false;
+  }
 }
