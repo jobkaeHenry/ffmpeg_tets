@@ -91,10 +91,12 @@ export async function convertToWebpOptimized({
   ffmpeg,
   input,
   progressCallback,
+  lossless = false,
 }: {
   ffmpeg: FFmpeg;
   input: File | string;
   progressCallback?: (progress: number, message: string) => void;
+  lossless?: boolean;
 }): Promise<ConversionResult | null> {
   if (!ffmpeg) return null;
 
@@ -102,6 +104,7 @@ export async function convertToWebpOptimized({
     ffmpeg,
     input,
     progressCallback,
+    lossless,
   });
 
   if (!result) return null;

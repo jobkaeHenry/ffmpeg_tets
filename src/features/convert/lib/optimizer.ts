@@ -18,6 +18,7 @@ export interface OptimizationConfig {
   ditherMethod: string;
   pixelFormat: string;
   usePalette: boolean;
+  lossless: boolean; // 무손실 모드 플래그
 }
 
 export interface OptimizationResult {
@@ -44,10 +45,12 @@ export async function optimizeGifToWebp({
   ffmpeg,
   input,
   progressCallback,
+  lossless = false, // 무손실 모드 (기본값: 손실)
 }: {
   ffmpeg: FFmpeg;
   input: File | string;
   progressCallback?: (progress: number, message: string) => void;
+  lossless?: boolean;
 }): Promise<OptimizationResult | null> {
   if (!ffmpeg) return null;
 
@@ -67,10 +70,10 @@ export async function optimizeGifToWebp({
   updateProgress(20, `팔레트 크기: ${paletteSize}색`);
 
   // 2단계: 설정 조합 생성
-  const configs = generateOptimizationConfigs(metadata, paletteSize);
+  const configs = generateOptimizationConfigs(metadata, paletteSize, lossless);
   updateProgress(
     25,
-    `${configs.length}개 설정 조합 테스트 시작...`
+    `${configs.length}개 설정 조합 테스트 시작... (${lossless ? "무손실" : "손실"} 모드)`
   );
 
   // 3단계: 각 설정으로 변환 테스트
@@ -219,21 +222,10 @@ export async function optimizeGifToWebp({
  */
 function generateOptimizationConfigs(
   metadata: GifMetadata,
-  paletteSize: number
+  paletteSize: number,
+  lossless: boolean = false
 ): OptimizationConfig[] {
   const configs: OptimizationConfig[] = [];
-
-  // 품질 레벨: 높음(85), 중간(80), 낮음(75)
-  const qualityLevels = [85, 80, 75];
-
-  // 압축 레벨: 최고(5), 높음(4), 중간(3)
-  const compressionLevels = [5, 4, 3];
-
-  // 스케일 필터: Lanczos (기본), Spline36 (대안)
-  const scaleFilters = ["lanczos", "spline36"];
-
-  // 디더링: Bayer, Floyd-Steinberg
-  const ditherMethods = ["bayer:bayer_scale=2", "floyd_steinberg"];
 
   // 알파 채널 여부에 따른 픽셀 포맷
   const pixelFormats = metadata.hasAlpha ? ["yuva444p"] : ["yuv420p"];
@@ -241,24 +233,62 @@ function generateOptimizationConfigs(
   // 팔레트 사용 여부 (256색 이하면 팔레트 최적화)
   const usePalette = paletteSize > 0 && paletteSize <= 256;
 
-  // 조합 생성 (너무 많으면 성능 문제 → 상위 조합만)
-  for (const quality of qualityLevels) {
-    for (const compression of compressionLevels) {
-      // 각 품질에 대해 2개의 조합만 생성 (성능 최적화)
-      if (configs.length >= 6) break;
+  if (lossless) {
+    // 무손실 모드: quality는 압축 레벨 (0-100, 100=최대 압축)
+    // compression_level은 속도/크기 트레이드오프 (0-6)
+    const qualityLevels = [100, 95, 90]; // 압축 강도
+    const compressionLevels = [6, 5, 4]; // 압축 레벨
 
-      const scaleFilter = scaleFilters[0]; // 기본 Lanczos
-      const dither = ditherMethods[0]; // 기본 Bayer
+    for (const quality of qualityLevels) {
+      for (const compression of compressionLevels) {
+        if (configs.length >= 6) break;
 
-      configs.push({
-        quality,
-        compression,
-        preset: "picture",
-        scaleFilter,
-        ditherMethod: dither,
-        pixelFormat: pixelFormats[0],
-        usePalette,
-      });
+        configs.push({
+          quality,
+          compression,
+          preset: "picture",
+          scaleFilter: "lanczos",
+          ditherMethod: "bayer:bayer_scale=2",
+          pixelFormat: pixelFormats[0],
+          usePalette: false, // 무손실에서는 팔레트 사용 안 함
+          lossless: true,
+        });
+      }
+    }
+  } else {
+    // 손실 모드 (기존 로직)
+    // 품질 레벨: 높음(85), 중간(80), 낮음(75)
+    const qualityLevels = [85, 80, 75];
+
+    // 압축 레벨: 최고(5), 높음(4), 중간(3)
+    const compressionLevels = [5, 4, 3];
+
+    // 스케일 필터: Lanczos (기본), Spline36 (대안)
+    const scaleFilters = ["lanczos", "spline36"];
+
+    // 디더링: Bayer, Floyd-Steinberg
+    const ditherMethods = ["bayer:bayer_scale=2", "floyd_steinberg"];
+
+    // 조합 생성 (너무 많으면 성능 문제 → 상위 조합만)
+    for (const quality of qualityLevels) {
+      for (const compression of compressionLevels) {
+        // 각 품질에 대해 2개의 조합만 생성 (성능 최적화)
+        if (configs.length >= 6) break;
+
+        const scaleFilter = scaleFilters[0]; // 기본 Lanczos
+        const dither = ditherMethods[0]; // 기본 Bayer
+
+        configs.push({
+          quality,
+          compression,
+          preset: "picture",
+          scaleFilter,
+          ditherMethod: dither,
+          pixelFormat: pixelFormats[0],
+          usePalette,
+          lossless: false,
+        });
+      }
     }
   }
 
@@ -330,15 +360,24 @@ async function convertWithConfig(
     // 일반 변환
     filterChain += `,format=${config.pixelFormat}`;
 
-    await ffmpeg.exec([
+    const ffmpegArgs = [
       "-i",
       inputName,
       "-filter:v",
       filterChain,
       "-c:v",
       "libwebp",
-      "-q:v",
-      String(config.quality),
+    ];
+
+    // 무손실 모드 처리
+    if (config.lossless) {
+      ffmpegArgs.push("-lossless", "1");
+      ffmpegArgs.push("-quality", String(config.quality)); // 압축 레벨
+    } else {
+      ffmpegArgs.push("-q:v", String(config.quality)); // 품질
+    }
+
+    ffmpegArgs.push(
       "-compression_level",
       String(config.compression),
       "-preset",
@@ -349,8 +388,10 @@ async function convertWithConfig(
       "0",
       "-an",
       "-y",
-      outputName,
-    ]);
+      outputName
+    );
+
+    await ffmpeg.exec(ffmpegArgs);
   }
 
   const data = (await ffmpeg.readFile(outputName)) as Uint8Array;

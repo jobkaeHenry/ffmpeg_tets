@@ -31,6 +31,7 @@ export default function App() {
   const [originalSize, setOriginalSize] = useState<number | null>(null);
   const [convertedSize, setConvertedSize] = useState<number | null>(null);
   const [useOptimizer, setUseOptimizer] = useState(true); // 최적화 모드
+  const [useLossless, setUseLossless] = useState(true); // 무손실 모드 (기본 활성화)
   const [qualityMetrics, setQualityMetrics] = useState<QualityMetrics | null>(
     null
   );
@@ -87,6 +88,7 @@ export default function App() {
               setProgress(prog);
               setLoadingMessage(msg);
             },
+            lossless: useLossless,
           });
         } else {
           result = await convertToWebpLib({
@@ -107,6 +109,7 @@ export default function App() {
               setProgress(prog);
               setLoadingMessage(msg);
             },
+            lossless: useLossless,
           });
         } else {
           result = await convertToWebpLib({
@@ -222,18 +225,63 @@ export default function App() {
           </span>
         </label>
         {useOptimizer && (
-          <p
-            style={{
-              marginTop: 8,
-              fontSize: "0.85rem",
-              color: "#666",
-              lineHeight: 1.5,
-            }}
-          >
-            여러 설정 조합을 테스트하여 최적의 품질/용량 비율을 자동 탐색합니다.
-            <br />
-            SSIM ≥ 0.98, ΔE ≤ 2.3, 엣지 보존율 ≥ 95% 기준을 충족합니다.
-          </p>
+          <>
+            <p
+              style={{
+                marginTop: 8,
+                fontSize: "0.85rem",
+                color: "#666",
+                lineHeight: 1.5,
+              }}
+            >
+              여러 설정 조합을 테스트하여 최적의 품질/용량 비율을 자동 탐색합니다.
+              <br />
+              SSIM ≥ 0.98, ΔE ≤ 2.3, 엣지 보존율 ≥ 95% 기준을 충족합니다.
+            </p>
+
+            {/* 무손실 모드 토글 */}
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #eee" }}>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  cursor: "pointer",
+                  gap: 8,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={useLossless}
+                  onChange={(e) => setUseLossless(e.target.checked)}
+                  style={{ cursor: "pointer" }}
+                />
+                <span style={{ fontSize: "0.95rem", fontWeight: 500 }}>
+                  무손실 압축 (Lossless)
+                </span>
+              </label>
+              <p
+                style={{
+                  marginTop: 6,
+                  fontSize: "0.8rem",
+                  color: "#666",
+                  lineHeight: 1.4,
+                  marginLeft: 24,
+                }}
+              >
+                {useLossless ? (
+                  <>
+                    ✓ 화질 손상 없이 원본과 100% 동일한 품질을 유지합니다.
+                    <br />
+                    파일 크기가 손실 압축보다 클 수 있지만 원본보다는 작습니다.
+                  </>
+                ) : (
+                  <>
+                    손실 압축 모드: 파일 크기를 더 줄이지만 약간의 화질 저하가 있을 수 있습니다.
+                  </>
+                )}
+              </p>
+            </div>
+          </>
         )}
       </div>
 
