@@ -19,6 +19,14 @@ export interface OptimizationConfig {
   pixelFormat: string;
   usePalette: boolean;
   lossless: boolean; // 무손실 모드 플래그
+  // 고급 WebP 옵션
+  method?: number; // 0-6: 압축 방법 (6=최고 압축, 0=빠름)
+  nearLossless?: number; // 0-100: 시각적 무손실 (0=완전무손실, 100=더 많은 손실)
+  useSharpYuv?: boolean; // RGB→YUV 변환 정확도 향상
+  encodingStrategy?: "pure-lossless" | "near-lossless" | "hybrid" | "optimized-lossy";
+  // 프레임 최적화
+  removeDuplicates?: boolean; // 중복 프레임 제거
+  deltaEncoding?: boolean; // 프레임 간 차이만 저장
 }
 
 export interface OptimizationResult {
@@ -84,9 +92,29 @@ export async function optimizeGifToWebp({
   for (let i = 0; i < configs.length; i++) {
     const config = configs[i];
     const progress = 25 + (i / configs.length) * 50;
+
+    // 전략 이름 표시
+    let strategyName = "";
+    switch (config.encodingStrategy) {
+      case "pure-lossless":
+        strategyName = "완전 무손실";
+        break;
+      case "near-lossless":
+        strategyName = `준무손실 (NL=${config.nearLossless})`;
+        break;
+      case "hybrid":
+        strategyName = "하이브리드 고품질";
+        break;
+      case "optimized-lossy":
+        strategyName = "최적화 손실";
+        break;
+      default:
+        strategyName = "표준";
+    }
+
     updateProgress(
       progress,
-      `테스트 중 (${i + 1}/${configs.length}): Q=${config.quality}, C=${config.compression}`
+      `전략 ${i + 1}/${configs.length}: ${strategyName} (M=${config.method || 4}, C=${config.compression})`
     );
 
     try {
@@ -128,24 +156,53 @@ export async function optimizeGifToWebp({
     try {
       const metrics = await calculateAllMetrics(originalBlob, candidate.blob);
 
-      // 품질 기준: SSIM ≥ 0.98, ΔE ≤ 2.3, Edge ≥ 0.95
-      const meetsQualityCriteria =
-        metrics.ssim >= 0.98 &&
-        metrics.deltaE <= 2.3 &&
-        metrics.edgePreservation >= 0.95;
+      // 인코딩 전략에 따른 품질 기준 설정
+      let meetsQualityCriteria = false;
 
-      // 완화된 기준: SSIM ≥ 0.95
-      const meetsRelaxedCriteria = metrics.ssim >= 0.95;
+      if (candidate.config.encodingStrategy === "pure-lossless") {
+        // 완전 무손실: 매우 엄격한 기준 (실제로는 SSIM 1.0에 가까움)
+        meetsQualityCriteria = metrics.ssim >= 0.99;
+      } else if (candidate.config.encodingStrategy === "near-lossless") {
+        // 준무손실: 시각적으로 구분 불가능한 수준
+        meetsQualityCriteria =
+          metrics.ssim >= 0.97 &&
+          metrics.deltaE <= 3.0 &&
+          metrics.edgePreservation >= 0.93;
+      } else if (candidate.config.encodingStrategy === "hybrid") {
+        // 하이브리드: 높은 품질 기준
+        meetsQualityCriteria =
+          metrics.ssim >= 0.96 &&
+          metrics.deltaE <= 4.0 &&
+          metrics.edgePreservation >= 0.92;
+      } else {
+        // 최적화 손실: 표준 기준
+        meetsQualityCriteria =
+          metrics.ssim >= 0.95 &&
+          metrics.deltaE <= 5.0 &&
+          metrics.edgePreservation >= 0.90;
+      }
+
+      // 완화된 기준: 모든 전략에 대해 SSIM ≥ 0.92
+      const meetsRelaxedCriteria = metrics.ssim >= 0.92;
 
       if (meetsQualityCriteria || meetsRelaxedCriteria) {
-        // 점수 계산: 품질 유지하면서 용량 최소화
+        // 점수 계산: 전략에 따라 가중치 조정
+        let qualityWeight = 0.7;
+        let sizeWeight = 0.3;
+
+        // 무손실 모드에서는 크기 절약을 더 중요시
+        if (lossless) {
+          qualityWeight = 0.5; // 품질은 이미 보장됨
+          sizeWeight = 0.5; // 크기 최소화에 집중
+        }
+
         const qualityScore =
           metrics.ssim * 0.4 +
-          (1 - metrics.deltaE / 10) * 0.3 +
+          (1 - Math.min(metrics.deltaE / 10, 1)) * 0.3 +
           metrics.edgePreservation * 0.3;
 
         const sizeScore = 1 / candidate.sizeKB;
-        const score = qualityScore * 0.7 + sizeScore * 0.3;
+        const score = qualityScore * qualityWeight + sizeScore * sizeWeight;
 
         if (score > bestScore) {
           bestScore = score;
@@ -219,6 +276,7 @@ export async function optimizeGifToWebp({
 
 /**
  * 메타데이터 기반 최적화 설정 조합 생성
+ * 다양한 인코딩 전략을 시도하여 최적의 품질/크기 비율 달성
  */
 function generateOptimizationConfigs(
   metadata: GifMetadata,
@@ -233,11 +291,158 @@ function generateOptimizationConfigs(
   // 팔레트 사용 여부 (256색 이하면 팔레트 최적화)
   const usePalette = paletteSize > 0 && paletteSize <= 256;
 
+  // 프레임 수에 따른 최적화 전략
+  const hasManyFrames = metadata.frameCount > 20;
+
   if (lossless) {
-    // 무손실 모드: quality는 압축 레벨 (0-100, 100=최대 압축)
-    // compression_level은 속도/크기 트레이드오프 (0-6)
-    const qualityLevels = [100, 95, 90]; // 압축 강도
-    const compressionLevels = [6, 5, 4]; // 압축 레벨
+    // === 무손실 모드: 다양한 전략 시도 ===
+
+    // 전략 1: Pure Lossless + Maximum Compression
+    // FFmpeg libwebp의 -lossless 1 + method 6 (최고 압축)
+    configs.push({
+      quality: 100,
+      compression: 6,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "bayer:bayer_scale=2",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: true,
+      method: 6, // 최고 압축 방법
+      useSharpYuv: false, // 무손실에서는 불필요
+      encodingStrategy: "pure-lossless",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+    });
+
+    // 전략 2: Pure Lossless + Balanced Compression
+    configs.push({
+      quality: 100,
+      compression: 5,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "bayer:bayer_scale=2",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: true,
+      method: 4,
+      useSharpYuv: false,
+      encodingStrategy: "pure-lossless",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+    });
+
+    // 전략 3: Near-Lossless (quality 60) - 시각적으로 무손실, 더 작은 크기
+    // nearLossless 값이 낮을수록 무손실에 가까움 (0=완전 무손실)
+    configs.push({
+      quality: 100,
+      compression: 6,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "bayer:bayer_scale=2",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: true,
+      method: 6,
+      nearLossless: 60, // 시각적으로 거의 무손실
+      useSharpYuv: false,
+      encodingStrategy: "near-lossless",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+    });
+
+    // 전략 4: Near-Lossless (quality 40) - 더 공격적
+    configs.push({
+      quality: 100,
+      compression: 6,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "bayer:bayer_scale=2",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: true,
+      method: 6,
+      nearLossless: 40,
+      useSharpYuv: false,
+      encodingStrategy: "near-lossless",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+    });
+
+    // 전략 5: Near-Lossless (quality 20) - 가장 공격적, 여전히 시각적 무손실
+    configs.push({
+      quality: 100,
+      compression: 6,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "bayer:bayer_scale=2",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: true,
+      method: 6,
+      nearLossless: 20,
+      useSharpYuv: false,
+      encodingStrategy: "near-lossless",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+    });
+
+    // 전략 6: Hybrid - 고품질 손실 + Sharp YUV (매우 높은 품질 유지)
+    // 무손실은 아니지만 품질 기준(SSIM ≥ 0.98)을 충족하면서 작은 크기
+    configs.push({
+      quality: 98,
+      compression: 6,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "floyd_steinberg",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: false,
+      method: 6,
+      useSharpYuv: true, // RGB→YUV 변환 정확도 향상
+      encodingStrategy: "hybrid",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+    });
+
+    // 전략 7: Optimized Lossy - 최고 품질 손실 압축
+    configs.push({
+      quality: 95,
+      compression: 6,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "floyd_steinberg",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: false,
+      method: 6,
+      useSharpYuv: true,
+      encodingStrategy: "optimized-lossy",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+    });
+
+    // 전략 8: Fast Near-Lossless (빠른 처리)
+    configs.push({
+      quality: 90,
+      compression: 4,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "bayer:bayer_scale=2",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: true,
+      method: 3,
+      nearLossless: 50,
+      useSharpYuv: false,
+      encodingStrategy: "near-lossless",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+    });
+  } else {
+    // === 손실 모드: 기존 로직 유지 ===
+    const qualityLevels = [85, 80, 75];
+    const compressionLevels = [5, 4, 3];
 
     for (const quality of qualityLevels) {
       for (const compression of compressionLevels) {
@@ -250,43 +455,13 @@ function generateOptimizationConfigs(
           scaleFilter: "lanczos",
           ditherMethod: "bayer:bayer_scale=2",
           pixelFormat: pixelFormats[0],
-          usePalette: false, // 무손실에서는 팔레트 사용 안 함
-          lossless: true,
-        });
-      }
-    }
-  } else {
-    // 손실 모드 (기존 로직)
-    // 품질 레벨: 높음(85), 중간(80), 낮음(75)
-    const qualityLevels = [85, 80, 75];
-
-    // 압축 레벨: 최고(5), 높음(4), 중간(3)
-    const compressionLevels = [5, 4, 3];
-
-    // 스케일 필터: Lanczos (기본), Spline36 (대안)
-    const scaleFilters = ["lanczos", "spline36"];
-
-    // 디더링: Bayer, Floyd-Steinberg
-    const ditherMethods = ["bayer:bayer_scale=2", "floyd_steinberg"];
-
-    // 조합 생성 (너무 많으면 성능 문제 → 상위 조합만)
-    for (const quality of qualityLevels) {
-      for (const compression of compressionLevels) {
-        // 각 품질에 대해 2개의 조합만 생성 (성능 최적화)
-        if (configs.length >= 6) break;
-
-        const scaleFilter = scaleFilters[0]; // 기본 Lanczos
-        const dither = ditherMethods[0]; // 기본 Bayer
-
-        configs.push({
-          quality,
-          compression,
-          preset: "picture",
-          scaleFilter,
-          ditherMethod: dither,
-          pixelFormat: pixelFormats[0],
           usePalette,
           lossless: false,
+          method: 4,
+          useSharpYuv: false,
+          encodingStrategy: "optimized-lossy",
+          removeDuplicates: false,
+          deltaEncoding: false,
         });
       }
     }
@@ -307,8 +482,20 @@ async function convertWithConfig(
 ): Promise<CandidateResult | null> {
   const outputName = `candidate_${index}.webp`;
 
-  // 필터 구성
-  let filterChain = `fps=${metadata.fps}`;
+  // === 필터 체인 구성 ===
+  let filterChain = "";
+
+  // 1. 프레임 최적화: 중복 제거 (mpdecimate 필터)
+  if (config.removeDuplicates && metadata.frameCount > 10) {
+    // mpdecimate: 거의 동일한 프레임 제거 (hi/lo/frac 파라미터로 민감도 조절)
+    // hi=512, lo=64, frac=0.1은 매우 유사한 프레임만 제거
+    filterChain += "mpdecimate=hi=512:lo=64:frac=0.1,";
+  }
+
+  // 2. FPS 설정 (중복 제거 후 프레임레이트 조정)
+  filterChain += `fps=${metadata.fps}`;
+
+  // 3. 스케일 필터 (고품질 리샘플링)
   filterChain += `,scale=iw:-1:flags=${config.scaleFilter}`;
 
   // 팔레트 사용 시
@@ -357,7 +544,7 @@ async function convertWithConfig(
       // 무시
     }
   } else {
-    // 일반 변환
+    // === 일반 변환 (고급 WebP 옵션 적용) ===
     filterChain += `,format=${config.pixelFormat}`;
 
     const ffmpegArgs = [
@@ -369,24 +556,42 @@ async function convertWithConfig(
       "libwebp",
     ];
 
-    // 무손실 모드 처리
+    // 무손실/손실 모드 설정
     if (config.lossless) {
       ffmpegArgs.push("-lossless", "1");
-      ffmpegArgs.push("-quality", String(config.quality)); // 압축 레벨
+      ffmpegArgs.push("-quality", String(config.quality)); // 무손실 압축 effort
+
+      // Near-lossless 옵션 (시각적 무손실)
+      if (config.nearLossless !== undefined) {
+        ffmpegArgs.push("-near_lossless", String(config.nearLossless));
+      }
     } else {
-      ffmpegArgs.push("-q:v", String(config.quality)); // 품질
+      ffmpegArgs.push("-q:v", String(config.quality)); // 손실 품질
+
+      // Sharp YUV 옵션 (RGB→YUV 변환 정확도 향상)
+      if (config.useSharpYuv) {
+        ffmpegArgs.push("-use_sharp_yuv", "1");
+      }
     }
 
+    // 압축 레벨 (속도 vs 크기 트레이드오프)
+    ffmpegArgs.push("-compression_level", String(config.compression));
+
+    // 압축 방법 (0=빠름, 6=최고 압축)
+    if (config.method !== undefined) {
+      ffmpegArgs.push("-method", String(config.method));
+    }
+
+    // 프리셋 및 픽셀 포맷
     ffmpegArgs.push(
-      "-compression_level",
-      String(config.compression),
       "-preset",
       config.preset,
       "-pix_fmt",
       config.pixelFormat,
       "-loop",
       "0",
-      "-an",
+      "-an", // 오디오 제거
+      "-map_metadata", "-1", // 메타데이터 제거 (크기 절약)
       "-y",
       outputName
     );

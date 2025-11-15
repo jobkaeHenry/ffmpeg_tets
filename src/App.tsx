@@ -42,6 +42,7 @@ export default function App() {
     height: number;
     hasAlpha: boolean;
   } | null>(null);
+  const [encodingStrategy, setEncodingStrategy] = useState<string | null>(null);
   const onToggleSample = () => {
     setOutputUrl(null);
   };
@@ -127,6 +128,7 @@ export default function App() {
         setConvertedSize(result.sizeKB);
         setQualityMetrics(result.metrics || null);
         setMetadata(result.metadata || null);
+        setEncodingStrategy(result.encodingStrategy || null);
         setProgress(100);
         setLoadingMessage("");
       }
@@ -317,6 +319,27 @@ export default function App() {
           >
             품질 분석 결과
           </h3>
+
+          {/* 사용된 인코딩 전략 표시 */}
+          {encodingStrategy && (
+            <div
+              style={{
+                marginBottom: 16,
+                padding: 12,
+                backgroundColor: "#f0f9ff",
+                borderRadius: 6,
+                border: "1px solid #bae6fd",
+              }}
+            >
+              <div style={{ fontSize: "0.85rem", color: "#0369a1", fontWeight: 500 }}>
+                선택된 최적 전략:{" "}
+                {encodingStrategy === "pure-lossless" && "완전 무손실 압축"}
+                {encodingStrategy === "near-lossless" && "준무손실 압축 (시각적 무손실)"}
+                {encodingStrategy === "hybrid" && "하이브리드 고품질 압축"}
+                {encodingStrategy === "optimized-lossy" && "최적화 손실 압축"}
+              </div>
+            </div>
+          )}
           <div style={{ display: "grid", gap: 12 }}>
             <MetricRow
               label="SSIM (구조적 유사도)"

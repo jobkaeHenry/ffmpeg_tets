@@ -16,6 +16,13 @@ export interface ConversionResult {
     height: number;
     hasAlpha: boolean;
   };
+  encodingStrategy?: string;
+  config?: {
+    method?: number;
+    nearLossless?: number;
+    useSharpYuv?: boolean;
+    lossless: boolean;
+  };
 }
 
 /**
@@ -121,6 +128,13 @@ export async function convertToWebpOptimized({
       width: result.metadata.width,
       height: result.metadata.height,
       hasAlpha: result.metadata.hasAlpha,
+    },
+    encodingStrategy: result.config.encodingStrategy,
+    config: {
+      method: result.config.method,
+      nearLossless: result.config.nearLossless,
+      useSharpYuv: result.config.useSharpYuv,
+      lossless: result.config.lossless,
     },
   };
 }
