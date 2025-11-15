@@ -23,6 +23,14 @@ export interface ConversionResult {
     useSharpYuv?: boolean;
     lossless: boolean;
   };
+  compressionStats?: {
+    originalSizeKB: number;
+    compressedSizeKB: number;
+    savingsKB: number;
+    savingsPercent: number;
+    isLargerThanOriginal: boolean;
+    bitsPerPixel: number;
+  };
 }
 
 /**
@@ -136,5 +144,6 @@ export async function convertToWebpOptimized({
       useSharpYuv: result.config.useSharpYuv,
       lossless: result.config.lossless,
     },
+    compressionStats: result.compressionStats,
   };
 }

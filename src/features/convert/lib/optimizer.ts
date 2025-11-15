@@ -27,6 +27,13 @@ export interface OptimizationConfig {
   // 프레임 최적화
   removeDuplicates?: boolean; // 중복 프레임 제거
   deltaEncoding?: boolean; // 프레임 간 차이만 저장
+  // 노이즈 제거 & 전처리
+  denoise?: boolean; // 노이즈 제거 활성화
+  denoiseStrength?: "light" | "medium" | "strong"; // 노이즈 제거 강도
+  // 애니메이션 최적화
+  minKeyframeInterval?: number; // 최소 키프레임 간격
+  maxKeyframeInterval?: number; // 최대 키프레임 간격
+  mixedMode?: boolean; // 혼합 모드 (일부 프레임 손실, 일부 무손실)
 }
 
 export interface OptimizationResult {
@@ -37,6 +44,14 @@ export interface OptimizationResult {
   metrics: QualityMetrics;
   metadata: GifMetadata;
   compressionRatio: number;
+  compressionStats?: {
+    originalSizeKB: number;
+    compressedSizeKB: number;
+    savingsKB: number;
+    savingsPercent: number;
+    isLargerThanOriginal: boolean;
+    bitsPerPixel: number; // 압축 효율성 지표
+  };
 }
 
 interface CandidateResult {
@@ -254,6 +269,15 @@ export async function optimizeGifToWebp({
 
   const compressionRatio = bestCandidate.sizeKB / originalSize;
 
+  // 압축 통계 계산
+  const savingsKB = originalSize - bestCandidate.sizeKB;
+  const savingsPercent = ((savingsKB / originalSize) * 100);
+  const isLargerThanOriginal = bestCandidate.sizeKB > originalSize;
+
+  // Bits per pixel 계산 (압축 효율성 지표)
+  const totalPixels = metadata.width * metadata.height * metadata.frameCount;
+  const bitsPerPixel = (bestCandidate.sizeKB * 1024 * 8) / totalPixels;
+
   // 임시 파일 정리
   try {
     await ffmpeg.deleteFile(inputName);
@@ -271,6 +295,14 @@ export async function optimizeGifToWebp({
     metrics: finalMetrics,
     metadata,
     compressionRatio,
+    compressionStats: {
+      originalSizeKB: originalSize,
+      compressedSizeKB: bestCandidate.sizeKB,
+      savingsKB,
+      savingsPercent,
+      isLargerThanOriginal,
+      bitsPerPixel,
+    },
   };
 }
 
@@ -313,6 +345,9 @@ function generateOptimizationConfigs(
       encodingStrategy: "pure-lossless",
       removeDuplicates: hasManyFrames,
       deltaEncoding: hasManyFrames,
+      denoise: false, // 완전 무손실에서는 노이즈 제거 안 함
+      minKeyframeInterval: metadata.frameCount > 50 ? 10 : undefined,
+      maxKeyframeInterval: metadata.frameCount > 50 ? 100 : undefined,
     });
 
     // 전략 2: Pure Lossless + Balanced Compression
@@ -439,6 +474,46 @@ function generateOptimizationConfigs(
       removeDuplicates: hasManyFrames,
       deltaEncoding: hasManyFrames,
     });
+
+    // 전략 9: Near-Lossless + Light Denoise (노이즈 제거 + 준무손실)
+    // GIF 특유의 디더링 노이즈를 제거하면 압축률 향상
+    configs.push({
+      quality: 100,
+      compression: 6,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "floyd_steinberg",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: true,
+      method: 6,
+      nearLossless: 30,
+      useSharpYuv: false,
+      encodingStrategy: "near-lossless",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+      denoise: true,
+      denoiseStrength: "light", // 약한 노이즈 제거
+    });
+
+    // 전략 10: Hybrid + Medium Denoise (하이브리드 + 중간 강도 노이즈 제거)
+    configs.push({
+      quality: 96,
+      compression: 6,
+      preset: "picture",
+      scaleFilter: "lanczos",
+      ditherMethod: "floyd_steinberg",
+      pixelFormat: pixelFormats[0],
+      usePalette: false,
+      lossless: false,
+      method: 6,
+      useSharpYuv: true,
+      encodingStrategy: "hybrid",
+      removeDuplicates: hasManyFrames,
+      deltaEncoding: hasManyFrames,
+      denoise: true,
+      denoiseStrength: "medium", // 중간 강도 노이즈 제거
+    });
   } else {
     // === 손실 모드: 기존 로직 유지 ===
     const qualityLevels = [85, 80, 75];
@@ -485,17 +560,41 @@ async function convertWithConfig(
   // === 필터 체인 구성 ===
   let filterChain = "";
 
-  // 1. 프레임 최적화: 중복 제거 (mpdecimate 필터)
+  // 1. 노이즈 제거 필터 (선처리)
+  if (config.denoise) {
+    // hqdn3d: 고품질 3D 디노이즈 필터 (시간+공간 노이즈 제거)
+    // 파라미터: luma_spatial:chroma_spatial:luma_tmp:chroma_tmp
+    let denoiseParams = "";
+    switch (config.denoiseStrength) {
+      case "light":
+        // 약한 노이즈 제거: 디테일 유지, GIF 디더링 최소화
+        denoiseParams = "1.5:1.5:3:3";
+        break;
+      case "medium":
+        // 중간 노이즈 제거: 균형잡힌 노이즈 감소
+        denoiseParams = "3:3:6:6";
+        break;
+      case "strong":
+        // 강한 노이즈 제거: 최대 압축을 위한 공격적 노이즈 제거
+        denoiseParams = "5:5:10:10";
+        break;
+      default:
+        denoiseParams = "2:2:4:4"; // 기본값
+    }
+    filterChain += `hqdn3d=${denoiseParams},`;
+  }
+
+  // 2. 프레임 최적화: 중복 제거 (mpdecimate 필터)
   if (config.removeDuplicates && metadata.frameCount > 10) {
     // mpdecimate: 거의 동일한 프레임 제거 (hi/lo/frac 파라미터로 민감도 조절)
     // hi=512, lo=64, frac=0.1은 매우 유사한 프레임만 제거
     filterChain += "mpdecimate=hi=512:lo=64:frac=0.1,";
   }
 
-  // 2. FPS 설정 (중복 제거 후 프레임레이트 조정)
+  // 3. FPS 설정 (중복 제거 후 프레임레이트 조정)
   filterChain += `fps=${metadata.fps}`;
 
-  // 3. 스케일 필터 (고품질 리샘플링)
+  // 4. 스케일 필터 (고품질 리샘플링)
   filterChain += `,scale=iw:-1:flags=${config.scaleFilter}`;
 
   // 팔레트 사용 시

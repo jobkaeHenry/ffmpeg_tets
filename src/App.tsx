@@ -43,6 +43,14 @@ export default function App() {
     hasAlpha: boolean;
   } | null>(null);
   const [encodingStrategy, setEncodingStrategy] = useState<string | null>(null);
+  const [compressionStats, setCompressionStats] = useState<{
+    originalSizeKB: number;
+    compressedSizeKB: number;
+    savingsKB: number;
+    savingsPercent: number;
+    isLargerThanOriginal: boolean;
+    bitsPerPixel: number;
+  } | null>(null);
   const onToggleSample = () => {
     setOutputUrl(null);
   };
@@ -129,6 +137,7 @@ export default function App() {
         setQualityMetrics(result.metrics || null);
         setMetadata(result.metadata || null);
         setEncodingStrategy(result.encodingStrategy || null);
+        setCompressionStats(result.compressionStats || null);
         setProgress(100);
         setLoadingMessage("");
       }
@@ -338,6 +347,40 @@ export default function App() {
                 {encodingStrategy === "hybrid" && "하이브리드 고품질 압축"}
                 {encodingStrategy === "optimized-lossy" && "최적화 손실 압축"}
               </div>
+            </div>
+          )}
+
+          {/* 압축 효율성 리포트 */}
+          {compressionStats && (
+            <div
+              style={{
+                marginBottom: 16,
+                padding: 12,
+                backgroundColor: compressionStats.isLargerThanOriginal ? "#fef2f2" : "#f0fdf4",
+                borderRadius: 6,
+                border: compressionStats.isLargerThanOriginal ? "1px solid #fecaca" : "1px solid #bbf7d0",
+              }}
+            >
+              <div style={{ fontSize: "0.9rem", fontWeight: 600, marginBottom: 8, color: compressionStats.isLargerThanOriginal ? "#dc2626" : "#16a34a" }}>
+                {compressionStats.isLargerThanOriginal ? "⚠️ 압축 경고" : "✓ 압축 성공"}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: "0.8rem", color: "#666" }}>
+                <div>원본 크기: <strong>{compressionStats.originalSizeKB.toFixed(2)} KB</strong></div>
+                <div>압축 크기: <strong>{compressionStats.compressedSizeKB.toFixed(2)} KB</strong></div>
+                <div>절감량: <strong>{compressionStats.savingsKB.toFixed(2)} KB</strong></div>
+                <div>절감률: <strong>{compressionStats.savingsPercent.toFixed(1)}%</strong></div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  압축 효율: <strong>{compressionStats.bitsPerPixel.toFixed(3)} bits/pixel</strong>
+                  {compressionStats.bitsPerPixel < 1 && " (매우 우수)"}
+                  {compressionStats.bitsPerPixel >= 1 && compressionStats.bitsPerPixel < 2 && " (우수)"}
+                  {compressionStats.bitsPerPixel >= 2 && " (보통)"}
+                </div>
+              </div>
+              {compressionStats.isLargerThanOriginal && (
+                <div style={{ marginTop: 8, padding: 8, backgroundColor: "#fee2e2", borderRadius: 4, fontSize: "0.75rem", color: "#991b1b" }}>
+                  변환된 파일이 원본보다 큽니다. 원본 GIF가 이미 최적화되어 있거나, WebP 형식이 이 파일에 적합하지 않을 수 있습니다.
+                </div>
+              )}
             </div>
           )}
           <div style={{ display: "grid", gap: 12 }}>
