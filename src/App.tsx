@@ -31,6 +31,7 @@ export default function App() {
   const [originalSize, setOriginalSize] = useState<number | null>(null);
   const [convertedSize, setConvertedSize] = useState<number | null>(null);
   const [useOptimizer, setUseOptimizer] = useState(true); // 최적화 모드
+  const [useLossless, setUseLossless] = useState(true); // 무손실 모드 (기본 활성화)
   const [qualityMetrics, setQualityMetrics] = useState<QualityMetrics | null>(
     null
   );
@@ -40,6 +41,15 @@ export default function App() {
     width: number;
     height: number;
     hasAlpha: boolean;
+  } | null>(null);
+  const [encodingStrategy, setEncodingStrategy] = useState<string | null>(null);
+  const [compressionStats, setCompressionStats] = useState<{
+    originalSizeKB: number;
+    compressedSizeKB: number;
+    savingsKB: number;
+    savingsPercent: number;
+    isLargerThanOriginal: boolean;
+    bitsPerPixel: number;
   } | null>(null);
   const onToggleSample = () => {
     setOutputUrl(null);
@@ -87,6 +97,7 @@ export default function App() {
               setProgress(prog);
               setLoadingMessage(msg);
             },
+            lossless: useLossless,
           });
         } else {
           result = await convertToWebpLib({
@@ -107,6 +118,7 @@ export default function App() {
               setProgress(prog);
               setLoadingMessage(msg);
             },
+            lossless: useLossless,
           });
         } else {
           result = await convertToWebpLib({
@@ -124,6 +136,8 @@ export default function App() {
         setConvertedSize(result.sizeKB);
         setQualityMetrics(result.metrics || null);
         setMetadata(result.metadata || null);
+        setEncodingStrategy(result.encodingStrategy || null);
+        setCompressionStats(result.compressionStats || null);
         setProgress(100);
         setLoadingMessage("");
       }
@@ -222,18 +236,63 @@ export default function App() {
           </span>
         </label>
         {useOptimizer && (
-          <p
-            style={{
-              marginTop: 8,
-              fontSize: "0.85rem",
-              color: "#666",
-              lineHeight: 1.5,
-            }}
-          >
-            여러 설정 조합을 테스트하여 최적의 품질/용량 비율을 자동 탐색합니다.
-            <br />
-            SSIM ≥ 0.98, ΔE ≤ 2.3, 엣지 보존율 ≥ 95% 기준을 충족합니다.
-          </p>
+          <>
+            <p
+              style={{
+                marginTop: 8,
+                fontSize: "0.85rem",
+                color: "#666",
+                lineHeight: 1.5,
+              }}
+            >
+              여러 설정 조합을 테스트하여 최적의 품질/용량 비율을 자동 탐색합니다.
+              <br />
+              SSIM ≥ 0.98, ΔE ≤ 2.3, 엣지 보존율 ≥ 95% 기준을 충족합니다.
+            </p>
+
+            {/* 무손실 모드 토글 */}
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #eee" }}>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  cursor: "pointer",
+                  gap: 8,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={useLossless}
+                  onChange={(e) => setUseLossless(e.target.checked)}
+                  style={{ cursor: "pointer" }}
+                />
+                <span style={{ fontSize: "0.95rem", fontWeight: 500 }}>
+                  무손실 압축 (Lossless)
+                </span>
+              </label>
+              <p
+                style={{
+                  marginTop: 6,
+                  fontSize: "0.8rem",
+                  color: "#666",
+                  lineHeight: 1.4,
+                  marginLeft: 24,
+                }}
+              >
+                {useLossless ? (
+                  <>
+                    ✓ 화질 손상 없이 원본과 100% 동일한 품질을 유지합니다.
+                    <br />
+                    파일 크기가 손실 압축보다 클 수 있지만 원본보다는 작습니다.
+                  </>
+                ) : (
+                  <>
+                    손실 압축 모드: 파일 크기를 더 줄이지만 약간의 화질 저하가 있을 수 있습니다.
+                  </>
+                )}
+              </p>
+            </div>
+          </>
         )}
       </div>
 
@@ -269,6 +328,61 @@ export default function App() {
           >
             품질 분석 결과
           </h3>
+
+          {/* 사용된 인코딩 전략 표시 */}
+          {encodingStrategy && (
+            <div
+              style={{
+                marginBottom: 16,
+                padding: 12,
+                backgroundColor: "#f0f9ff",
+                borderRadius: 6,
+                border: "1px solid #bae6fd",
+              }}
+            >
+              <div style={{ fontSize: "0.85rem", color: "#0369a1", fontWeight: 500 }}>
+                선택된 최적 전략:{" "}
+                {encodingStrategy === "pure-lossless" && "완전 무손실 압축"}
+                {encodingStrategy === "near-lossless" && "준무손실 압축 (시각적 무손실)"}
+                {encodingStrategy === "hybrid" && "하이브리드 고품질 압축"}
+                {encodingStrategy === "optimized-lossy" && "최적화 손실 압축"}
+              </div>
+            </div>
+          )}
+
+          {/* 압축 효율성 리포트 */}
+          {compressionStats && (
+            <div
+              style={{
+                marginBottom: 16,
+                padding: 12,
+                backgroundColor: compressionStats.isLargerThanOriginal ? "#fef2f2" : "#f0fdf4",
+                borderRadius: 6,
+                border: compressionStats.isLargerThanOriginal ? "1px solid #fecaca" : "1px solid #bbf7d0",
+              }}
+            >
+              <div style={{ fontSize: "0.9rem", fontWeight: 600, marginBottom: 8, color: compressionStats.isLargerThanOriginal ? "#dc2626" : "#16a34a" }}>
+                {compressionStats.isLargerThanOriginal ? "⚠️ 압축 경고" : "✓ 압축 성공"}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: "0.8rem", color: "#666" }}>
+                <div>원본 크기: <strong>{compressionStats.originalSizeKB.toFixed(2)} KB</strong></div>
+                <div>압축 크기: <strong>{compressionStats.compressedSizeKB.toFixed(2)} KB</strong></div>
+                <div>절감량: <strong>{compressionStats.savingsKB.toFixed(2)} KB</strong></div>
+                <div>절감률: <strong>{compressionStats.savingsPercent.toFixed(1)}%</strong></div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  압축 효율: <strong>{compressionStats.bitsPerPixel.toFixed(3)} bits/pixel</strong>
+                  {compressionStats.bitsPerPixel < 1 && " (매우 우수)"}
+                  {compressionStats.bitsPerPixel >= 1 && compressionStats.bitsPerPixel < 2 && " (우수)"}
+                  {compressionStats.bitsPerPixel >= 2 && " (보통)"}
+                </div>
+              </div>
+              {compressionStats.isLargerThanOriginal && (
+                <div style={{ marginTop: 8, padding: 8, backgroundColor: "#fee2e2", borderRadius: 4, fontSize: "0.75rem", color: "#991b1b" }}>
+                  변환된 파일이 원본보다 큽니다. 원본 GIF가 이미 최적화되어 있거나, WebP 형식이 이 파일에 적합하지 않을 수 있습니다.
+                </div>
+              )}
+            </div>
+          )}
           <div style={{ display: "grid", gap: 12 }}>
             <MetricRow
               label="SSIM (구조적 유사도)"

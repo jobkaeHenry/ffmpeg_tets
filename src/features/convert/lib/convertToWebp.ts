@@ -16,6 +16,21 @@ export interface ConversionResult {
     height: number;
     hasAlpha: boolean;
   };
+  encodingStrategy?: string;
+  config?: {
+    method?: number;
+    nearLossless?: number;
+    useSharpYuv?: boolean;
+    lossless: boolean;
+  };
+  compressionStats?: {
+    originalSizeKB: number;
+    compressedSizeKB: number;
+    savingsKB: number;
+    savingsPercent: number;
+    isLargerThanOriginal: boolean;
+    bitsPerPixel: number;
+  };
 }
 
 /**
@@ -91,10 +106,12 @@ export async function convertToWebpOptimized({
   ffmpeg,
   input,
   progressCallback,
+  lossless = false,
 }: {
   ffmpeg: FFmpeg;
   input: File | string;
   progressCallback?: (progress: number, message: string) => void;
+  lossless?: boolean;
 }): Promise<ConversionResult | null> {
   if (!ffmpeg) return null;
 
@@ -102,6 +119,7 @@ export async function convertToWebpOptimized({
     ffmpeg,
     input,
     progressCallback,
+    lossless,
   });
 
   if (!result) return null;
@@ -119,5 +137,13 @@ export async function convertToWebpOptimized({
       height: result.metadata.height,
       hasAlpha: result.metadata.hasAlpha,
     },
+    encodingStrategy: result.config.encodingStrategy,
+    config: {
+      method: result.config.method,
+      nearLossless: result.config.nearLossless,
+      useSharpYuv: result.config.useSharpYuv,
+      lossless: result.config.lossless,
+    },
+    compressionStats: result.compressionStats,
   };
 }
